@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - include:
+      file: db/changelog/001-trading-core.sql
+  - include:
+      file: db/changelog/002-trading-pricing.sql
+  - include:
+      file: db/changelog/003-trading-defaults.sql
+  - include:
+      file: db/changelog/004-trading-reconciliation.sql
+  - include:
+      file: db/changelog/005-pmxconnect-corrections.sql

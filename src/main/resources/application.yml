@@ -1,0 +1,59 @@
+spring:
+  application:
+    name: trading-api
+  datasource:
+    url: ${TRADING_DB_URL:jdbc:postgresql://localhost:5432/trading}
+    username: ${TRADING_DB_USERNAME:trading}
+    password: ${TRADING_DB_PASSWORD:trading}
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+server:
+  servlet:
+    context-path: /trading-api
+  forward-headers-strategy: framework
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+trading:
+  security:
+    issuer: ${MYPORTAL_JWT_ISSUER:https://myportal.saamp.com}
+    audience: ${MYPORTAL_JWT_AUDIENCE:MYTRADING}
+    jwk-set-uri: ${MYPORTAL_JWKS_URI:https://myportal.saamp.com/.well-known/jwks.json}
+  pricing:
+    execution-max-age: ${TRADING_PRICE_EXECUTION_MAX_AGE:30s}
+    display-max-age: ${TRADING_PRICE_DISPLAY_MAX_AGE:5m}
+    default-drift-tolerance: ${TRADING_PRICE_DRIFT_TOLERANCE:0.002000}
+  reservations:
+    ttl: ${TRADING_RESERVATION_TTL:2m}
+    expiry-scan-delay: ${TRADING_RESERVATION_EXPIRY_SCAN_DELAY:30s}
+  reconciliation:
+    enabled: ${TRADING_RECONCILIATION_ENABLED:false}
+    interval: ${TRADING_RECONCILIATION_INTERVAL:15m}
+  provider:
+    mode: ${TRADING_PROVIDER_MODE:SIMULATED}
+    pmx:
+      base-url: ${PMXCONNECT_BASE_URL:}
+      token-id: ${PMXCONNECT_TOKEN_ID:}
+      version: ${PMXCONNECT_VERSION:v1_3}
+      environment: ${PMXCONNECT_ENVIRONMENT:}
+      request-timeout: ${PMXCONNECT_REQUEST_TIMEOUT:15s}
+      token-expiry-warning: ${PMXCONNECT_TOKEN_EXPIRY_WARNING:28d}
+      token-expiry-check-interval: ${PMXCONNECT_TOKEN_EXPIRY_CHECK_INTERVAL:24h}
+
+logging:
+  level:
+    root: INFO
+    com.saamp.trading: INFO
