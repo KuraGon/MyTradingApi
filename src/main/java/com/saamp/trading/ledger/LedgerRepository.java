@@ -9,7 +9,6 @@ import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
-import java.sql.Statement;
 import java.util.List;
 
 @Repository
@@ -23,7 +22,7 @@ public class LedgerRepository {
         jdbc.update(con -> {
             PreparedStatement ps = con.prepareStatement(
                     "INSERT INTO trading_ledger_entry(account_id,asset,delta,entry_type,order_id,transfer_ref,balance_after,created_by) VALUES (?,?,?,?,?,?,?,?)",
-                    Statement.RETURN_GENERATED_KEYS);
+                    new String[]{"id"});
             ps.setLong(1, accountId); ps.setString(2, asset.name()); ps.setBigDecimal(3, delta); ps.setString(4, type.name());
             if (orderId == null) ps.setNull(5, java.sql.Types.BIGINT); else ps.setLong(5, orderId);
             ps.setString(6, transferRef); ps.setBigDecimal(7, balanceAfter); ps.setString(8, createdBy);
