@@ -283,6 +283,7 @@ class OrderExecutionServiceTest {
         when(orders.findByIdempotencyKey("position-stale")).thenReturn(Optional.empty());
         when(pricingRepository.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(assetConfig()));
         when(pricing.quoteForDisplay(COMPANY_ID, Asset.XAU, Asset.EUR)).thenReturn(quote("100.000000", "100.000000"));
+        when(balances.find(eq(ACCOUNT_ID), any(Asset.class))).thenReturn(Optional.empty());
         when(balances.find(ACCOUNT_ID, Asset.XAU)).thenReturn(Optional.of(new Balance(ACCOUNT_ID, Asset.XAU, BigDecimal.ONE, OffsetDateTime.now())));
         when(pricing.quoteForExecution(COMPANY_ID, Asset.XAU, Asset.EUR))
                 .thenThrow(new TradingException(HttpStatus.CONFLICT, "MARKET_PRICE_STALE", "stale"));

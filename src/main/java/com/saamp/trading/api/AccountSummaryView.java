@@ -1,7 +1,8 @@
 package com.saamp.trading.api;
 import com.saamp.trading.domain.AccountStatus;
 import com.saamp.trading.domain.Asset;
-import com.saamp.trading.risk.RiskResult;
-import java.util.List;
-public record AccountSummaryView(long accountId, long companyId, Asset baseCurrency, AccountStatus status,
-                                 List<BalanceView> balances, RiskResult risk) {}
+import java.math.BigDecimal;
+
+/** Synthèse client composée à partir du calcul de risque métier existant. */
+public record AccountSummaryView(long accountId, Asset baseCurrency, AccountStatus status,
+                                 BigDecimal dealLimit, BigDecimal positionLimit, RiskSummaryView risk) {}

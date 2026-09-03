@@ -4,7 +4,7 @@ spring:
   datasource:
     url: ${TRADING_DB_URL:jdbc:postgresql://localhost:5432/trading}
     username: ${TRADING_DB_USERNAME:trading}
-    password: ${TRADING_DB_PASSWORD:trading}
+    password: ${TRADING_DB_PASSWORD}
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
 

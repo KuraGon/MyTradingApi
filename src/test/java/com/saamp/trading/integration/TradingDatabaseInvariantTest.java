@@ -1,6 +1,7 @@
 package com.saamp.trading.integration;
 
 import com.saamp.trading.account.BalanceRepository;
+import com.saamp.trading.common.TradingException;
 import com.saamp.trading.config.TradingProperties;
 import com.saamp.trading.domain.Asset;
 import com.saamp.trading.reservation.ReservationRepository;
@@ -16,36 +17,34 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
-import org.testcontainers.DockerClientFactory;
-import org.testcontainers.containers.PostgreSQLContainer;
 import javax.sql.DataSource;
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class TradingDatabaseInvariantTest {
 
-    private static PostgreSQLContainer<?> postgres;
+    private static final String DATABASE_URL = "jdbc:postgresql://localhost:5432/trading";
+    private static final String DATABASE_USERNAME = "trading";
+    private static final String DATABASE_PASSWORD_ENVIRONMENT_VARIABLE = "TRADING_DB_PASSWORD";
+    private static final AtomicLong COMPANY_IDS = new AtomicLong(System.currentTimeMillis());
+
     private AnnotationConfigApplicationContext context;
     private JdbcTemplate jdbc;
     private ReservationService reservations;
 
     @BeforeAll
     void startDatabase() {
-        assumeTrue(DockerClientFactory.instance().isDockerAvailable(),
-                "Docker is required for the PostgreSQL invariant tests");
-        postgres = new PostgreSQLContainer<>("postgres:16-alpine")
-                .withDatabaseName("trading")
-                .withUsername("trading")
-                .withPassword("trading");
-        postgres.start();
+        verifyLocalDatabaseIsAvailable();
         context = new AnnotationConfigApplicationContext(TestConfig.class);
         jdbc = context.getBean(JdbcTemplate.class);
         reservations = context.getBean(ReservationService.class);
@@ -54,15 +53,15 @@ class TradingDatabaseInvariantTest {
     @AfterAll
     void stopDatabase() {
         if (context != null) context.close();
-        if (postgres != null) postgres.stop();
     }
 
     @Test
     void twoConcurrentReservationsOnSameBalanceAllowOnlyOne() throws Exception {
-        long accountId = createAccount(1001L);
+        long companyId = COMPANY_IDS.incrementAndGet();
+        long accountId = createAccount(companyId);
         jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,?,?)", accountId, "EUR", new BigDecimal("100.000000"));
-        long order1 = createDraftOrder(accountId, 1001L, "concurrent-1");
-        long order2 = createDraftOrder(accountId, 1001L, "concurrent-2");
+        long order1 = createDraftOrder(accountId, companyId, "concurrent-1-" + companyId);
+        long order2 = createDraftOrder(accountId, companyId, "concurrent-2-" + companyId);
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
         CountDownLatch ready = new CountDownLatch(2);
@@ -92,7 +91,7 @@ class TradingDatabaseInvariantTest {
 
     @Test
     void databaseTriggerRejectsNegativeCurrencyBalanceEvenWhenServiceIsBypassed() {
-        long accountId = createAccount(1002L);
+        long accountId = createAccount(COMPANY_IDS.incrementAndGet());
         jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,?,?)", accountId, "EUR", new BigDecimal("10.000000"));
 
         assertThatThrownBy(() -> jdbc.update("UPDATE trading_balance SET quantity=-0.000001 WHERE account_id=? AND asset='EUR'", accountId))
@@ -103,8 +102,8 @@ class TradingDatabaseInvariantTest {
     }
 
     @Test
-    void ledgerUpdateAndDeleteAreRejectedByAppendOnlyTrigger() {
-        long accountId = createAccount(1003L);
+    void ledgerUpdateIsRejectedByAppendOnlyTrigger() {
+        long accountId = createAccount(COMPANY_IDS.incrementAndGet());
         jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,?,?)", accountId, "EUR", new BigDecimal("11.000000"));
         Long ledgerId = jdbc.queryForObject("""
                 INSERT INTO trading_ledger_entry(account_id,asset,delta,entry_type,balance_after,created_by)
@@ -113,6 +112,17 @@ class TradingDatabaseInvariantTest {
 
         assertThatThrownBy(() -> jdbc.update("UPDATE trading_ledger_entry SET delta=2 WHERE id=?", ledgerId))
                 .isInstanceOf(DataAccessException.class);
+    }
+
+    @Test
+    void ledgerDeleteIsRejectedByAppendOnlyTrigger() {
+        long accountId = createAccount(COMPANY_IDS.incrementAndGet());
+        jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,?,?)", accountId, "EUR", new BigDecimal("11.000000"));
+        Long ledgerId = jdbc.queryForObject("""
+                INSERT INTO trading_ledger_entry(account_id,asset,delta,entry_type,balance_after,created_by)
+                VALUES (?,'EUR',1.000000,'ADJUSTMENT',11.000000,'test') RETURNING id
+                """, Long.class, accountId);
+
         assertThatThrownBy(() -> jdbc.update("DELETE FROM trading_ledger_entry WHERE id=?", ledgerId))
                 .isInstanceOf(DataAccessException.class);
     }
@@ -146,8 +156,19 @@ class TradingDatabaseInvariantTest {
         try {
             reservations.reserve(accountId, Asset.EUR, new BigDecimal("80.000000"), orderId);
             return true;
-        } catch (RuntimeException expected) {
+        } catch (TradingException expected) {
             return false;
+        }
+    }
+
+    private void verifyLocalDatabaseIsAvailable() {
+        try (Connection ignored = TestConfig.dataSourceForLocalDatabase().getConnection()) {
+            // La connexion suffit : Liquibase vérifie ensuite le schéma et les changements appliqués.
+        } catch (SQLException exception) {
+            throw new IllegalStateException(
+                    "PostgreSQL locale indisponible sur localhost:5432 (base trading, utilisateur trading) : "
+                            + exception.getMessage(),
+                    exception);
         }
     }
 
@@ -176,7 +197,16 @@ class TradingDatabaseInvariantTest {
     static class TestConfig {
         @Bean
         DataSource dataSource() {
-            return new DriverManagerDataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+            return dataSourceForLocalDatabase();
+        }
+
+        private static DriverManagerDataSource dataSourceForLocalDatabase() {
+            String password = System.getenv(DATABASE_PASSWORD_ENVIRONMENT_VARIABLE);
+            if (password == null || password.isBlank()) {
+                throw new IllegalStateException(
+                        "La variable d'environnement TRADING_DB_PASSWORD est requise pour les tests PostgreSQL locaux");
+            }
+            return new DriverManagerDataSource(DATABASE_URL, DATABASE_USERNAME, password);
         }
 
         @Bean

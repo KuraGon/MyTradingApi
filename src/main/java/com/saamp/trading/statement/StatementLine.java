@@ -1,8 +1,11 @@
 package com.saamp.trading.statement;
 
 import com.saamp.trading.domain.Asset;
-import java.math.BigDecimal;
-import java.time.OffsetDateTime;
+import com.saamp.trading.domain.LedgerEntryType;
 
-public record StatementLine(Asset asset, BigDecimal balance, BigDecimal clientPrice,
-                            BigDecimal value, OffsetDateTime priceAsOf) {}
+import java.math.BigDecimal;
+import java.time.Instant;
+
+/** Ligne historique client dérivée directement d'une écriture immuable du ledger. */
+public record StatementLine(long id, Asset asset, BigDecimal delta, LedgerEntryType entryType,
+                            Long orderId, BigDecimal balanceAfter, Instant createdAt) {}

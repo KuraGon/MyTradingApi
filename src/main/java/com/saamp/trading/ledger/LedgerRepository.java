@@ -34,9 +34,30 @@ public class LedgerRepository {
 
     public List<LedgerEntry> findRecent(long accountId, int limit) {
         return jdbc.query("SELECT * FROM trading_ledger_entry WHERE account_id=? ORDER BY created_at DESC,id DESC LIMIT ?", (rs,n) ->
-                new LedgerEntry(rs.getLong("id"), rs.getLong("account_id"), Asset.valueOf(rs.getString("asset")),
-                        rs.getBigDecimal("delta"), LedgerEntryType.valueOf(rs.getString("entry_type")),
-                        (Long) rs.getObject("order_id"), rs.getString("transfer_ref"), rs.getBigDecimal("balance_after"),
-                        rs.getObject("created_at", java.time.OffsetDateTime.class), rs.getString("created_by")), accountId, limit);
+                map(rs), accountId, limit);
+    }
+
+    /**
+     * Lit une page stable du ledger immuable, strictement limitée au compte demandé.
+     *
+     * @param accountId compte dont les écritures doivent être restituées
+     * @param beforeId curseur exclusif ; {@code null} désigne la première page
+     * @param limit nombre maximal de lignes lues
+     * @return écritures classées par identifiant décroissant
+     */
+    public List<LedgerEntry> findPage(long accountId, Long beforeId, int limit) {
+        if (beforeId == null) {
+            return jdbc.query("SELECT * FROM trading_ledger_entry WHERE account_id=? ORDER BY id DESC LIMIT ?",
+                    (rs, n) -> map(rs), accountId, limit);
+        }
+        return jdbc.query("SELECT * FROM trading_ledger_entry WHERE account_id=? AND id<? ORDER BY id DESC LIMIT ?",
+                (rs, n) -> map(rs), accountId, beforeId, limit);
+    }
+
+    private LedgerEntry map(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new LedgerEntry(rs.getLong("id"), rs.getLong("account_id"), Asset.valueOf(rs.getString("asset")),
+                rs.getBigDecimal("delta"), LedgerEntryType.valueOf(rs.getString("entry_type")),
+                (Long) rs.getObject("order_id"), rs.getString("transfer_ref"), rs.getBigDecimal("balance_after"),
+                rs.getObject("created_at", java.time.OffsetDateTime.class), rs.getString("created_by"));
     }
 }

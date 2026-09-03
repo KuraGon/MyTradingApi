@@ -7,7 +7,6 @@ import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
-import java.sql.Statement;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -28,7 +27,7 @@ public class ReservationRepository {
         jdbc.update(con -> {
             PreparedStatement ps = con.prepareStatement(
                     "INSERT INTO trading_reservation(account_id,asset,quantity,order_id,batch_id,status,expires_at) VALUES (?,?,?,?,?,'ACTIVE',?)",
-                    Statement.RETURN_GENERATED_KEYS);
+                    new String[]{"id"});
             ps.setLong(1, accountId); ps.setString(2, asset.name()); ps.setBigDecimal(3, quantity);
             if (orderId == null) ps.setNull(4, java.sql.Types.BIGINT); else ps.setLong(4, orderId);
             if (batchId == null) ps.setNull(5, java.sql.Types.BIGINT); else ps.setLong(5, batchId);

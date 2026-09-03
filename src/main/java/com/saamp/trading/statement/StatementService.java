@@ -1,42 +1,45 @@
 package com.saamp.trading.statement;
 
-import com.saamp.trading.account.BalanceRepository;
 import com.saamp.trading.account.TradingAccount;
-import com.saamp.trading.domain.Asset;
-import com.saamp.trading.pricing.PricingService;
+import com.saamp.trading.ledger.LedgerRepository;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.time.OffsetDateTime;
-import java.util.ArrayList;
-import java.util.List;
+import java.time.Instant;
 
-/** Builds the client statement dataset without exposing internal margin or provider prices. */
+/** Construit le relevé client depuis le ledger en ajout seul, unique source historique fiable. */
 @Service
 public class StatementService {
-    private final BalanceRepository balances;
-    private final PricingService pricing;
-    public StatementService(BalanceRepository balances, PricingService pricing) { this.balances=balances;this.pricing=pricing; }
+    private static final int DEFAULT_PAGE_SIZE = 100;
+    private static final int MAX_PAGE_SIZE = 500;
+    private final LedgerRepository ledger;
 
-    public AccountStatement build(TradingAccount account) {
-        var lines = new ArrayList<StatementLine>();
-        BigDecimal total = BigDecimal.ZERO;
-        OffsetDateTime now = OffsetDateTime.now();
-        for (var balance : balances.findAll(account.id())) {
-            if (balance.quantity().signum()==0) continue;
-            if (balance.asset()==account.baseCurrency()) {
-                BigDecimal value=balance.quantity().setScale(2,RoundingMode.HALF_UP);
-                lines.add(new StatementLine(balance.asset(),balance.quantity(),BigDecimal.ONE,value,now));
-                total=total.add(value);
-            } else if (balance.asset().isMetal()) {
-                var quote=pricing.quoteForDisplay(account.companyId(),balance.asset(),account.baseCurrency());
-                // Spec §5.4 defines liquidation_value with the current client SELL price.
-                BigDecimal value=balance.quantity().multiply(quote.clientSellPrice()).setScale(2,RoundingMode.HALF_UP);
-                lines.add(new StatementLine(balance.asset(),balance.quantity(),quote.clientSellPrice(),value,quote.priceAsOf()));
-                total=total.add(value);
-            }
-        }
-        return new AccountStatement(account.id(),account.companyId(),account.baseCurrency(),now,List.copyOf(lines),total.setScale(2,RoundingMode.HALF_UP));
+    /**
+     * Utilise le ledger plutôt que la projection courante des soldes afin de préserver l'historique.
+     *
+     * @param ledger accès en lecture au journal append-only
+     */
+    public StatementService(LedgerRepository ledger) {
+        this.ledger = ledger;
+    }
+
+    /**
+     * Produit les lignes du relevé du seul compte préalablement résolu par société.
+     *
+     * @param account compte courant de l'utilisateur authentifié
+     * @param cursor identifiant exclusif de reprise, ou {@code null} pour la première page
+     * @param requestedLimit taille de page demandée
+     * @return relevé structuré issu du ledger
+     */
+    public AccountStatement build(TradingAccount account, Long cursor, Integer requestedLimit) {
+        int pageSize = requestedLimit == null ? DEFAULT_PAGE_SIZE : Math.min(Math.max(requestedLimit, 1), MAX_PAGE_SIZE);
+        var entries = ledger.findPage(account.id(), cursor, pageSize + 1);
+        boolean hasMore = entries.size() > pageSize;
+        var pageEntries = hasMore ? entries.subList(0, pageSize) : entries;
+        var lines = pageEntries.stream()
+                .map(entry -> new StatementLine(entry.id(), entry.asset(), entry.delta(), entry.entryType(),
+                        entry.orderId(), entry.balanceAfter(), entry.createdAt().toInstant()))
+                .toList();
+        Long nextCursor = hasMore ? pageEntries.getLast().id() : null;
+        return new AccountStatement(account.id(), account.baseCurrency(), Instant.now(), lines, nextCursor, hasMore);
     }
 }
