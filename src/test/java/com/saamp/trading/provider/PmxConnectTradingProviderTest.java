@@ -15,6 +15,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,6 +103,31 @@ class PmxConnectTradingProviderTest {
     }
 
     @Test
+    void refusesStartupWithExpiredToken() {
+        long exp = Instant.now().minusSeconds(60).getEpochSecond();
+        properties.getProvider().getPmx().setTokenId(jwt("{\"alg\":\"none\"}",
+                "{\"ClientId\":\"S0011\",\"env\":\"prod\",\"exp\":" + exp + "}"));
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("expiré");
+    }
+
+    @Test
+    void refusesStartupWithoutTokenOrExpiryClaim() {
+        properties.getProvider().getPmx().setTokenId(" ");
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("TOKEN_ID");
+
+        properties.getProvider().getPmx().setTokenId(jwt("{\"alg\":\"none\"}",
+                "{\"ClientId\":\"S0011\",\"env\":\"prod\"}"));
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("exp");
+    }
+
+    @Test
     void positionsPersistObservedAccountCodeSeparatelyFromTokenClientId() {
         server.createContext("/v1_3/GetCmdtyPositions", exchange -> respond(exchange, 200,
                 "{\"result\":[{\"AccountCode\":\"MT0184\",\"Cmdty\":\"EUR\",\"Position\":18913347.2},{\"AccountCode\":\"MT0184\",\"Cmdty\":\"USD\",\"Position\":2442712.34}]}"));
@@ -129,6 +155,194 @@ class PmxConnectTradingProviderTest {
         }
 
         verify(gate).close("PMXCONNECT_AUTH_FAILURE");
+    }
+
+    @Test
+    void unknownRequestedPairReturnsNoQuote() {
+        spotContexts("{\"result\":[{\"Pair\":\"XAUEUR\",\"Ask\":100.1,\"Bid\":100.0}]}",
+                "{\"result\":[{\"PAIR\":\"EURUSD\",\"ASK\":1.12,\"BID\":1.11}]}");
+        server.start();
+
+        var quotes = new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .fetchSpotRates(Set.of("UNKNOWN"));
+
+        assertThat(quotes).isEmpty();
+    }
+
+    @Test
+    void invalidSpotResponseFailsExplicitly() {
+        spotContexts("not-json", "{\"result\":[]}");
+        server.start();
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .fetchSpotRates(Set.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("illisible");
+    }
+
+    @Test
+    void missingSpotValueFailsExplicitly() {
+        spotContexts("{\"result\":[{\"Pair\":\"XAUEUR\",\"Ask\":100.1}]}", "{\"result\":[]}");
+        server.start();
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .fetchSpotRates(Set.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("incomplète");
+    }
+
+    @Test
+    void spotHttp400RemainsStructuredProviderFailure() {
+        server.createContext("/v1_3/GetSpotRates/MTL", exchange -> respond(exchange, 400,
+                "{\"status\":400,\"error_code\":699,\"message\":\"Bad request\"}"));
+        server.start();
+        var provider = new PmxConnectTradingProvider(properties, gate, providerAccounts);
+
+        assertThatThrownBy(() -> provider.fetchSpotRates(Set.of()))
+                .isInstanceOfSatisfying(PmxConnectException.class, error -> {
+                    assertThat(error.httpStatus()).isEqualTo(400);
+                    assertThat(error.errorCode()).isEqualTo(699);
+                });
+    }
+
+    @Test
+    void spotHttp500RemainsStructuredProviderFailure() {
+        server.createContext("/v1_3/GetSpotRates/MTL", exchange -> respond(exchange, 500,
+                "{\"status\":500,\"message\":\"Unavailable\"}"));
+        server.start();
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .fetchSpotRates(Set.of()))
+                .isInstanceOfSatisfying(PmxConnectException.class,
+                        error -> assertThat(error.httpStatus()).isEqualTo(500));
+    }
+
+    @Test
+    void requestTimeoutRemainsAProviderFailureWithoutClosingGate() {
+        properties.getProvider().getPmx().setRequestTimeout(Duration.ofMillis(50));
+        server.createContext("/v1_3/GetSpotRates/MTL", exchange -> {
+            try {
+                Thread.sleep(250);
+                respond(exchange, 200, "{\"result\":[]}");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                exchange.close();
+            }
+        });
+        server.start();
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .fetchSpotRates(Set.of()))
+                .isInstanceOfSatisfying(PmxConnectException.class,
+                        error -> assertThat(error.httpStatus()).isZero());
+        verify(gate, never()).close(anyString());
+    }
+
+    @Test
+    void requestStatusMapsProcessedInProcessAndFailed() {
+        var responses = new java.util.ArrayDeque<>(java.util.List.of(
+                "{\"Status\":\"Processed\",\"ClOrdId\":\"SAAMP-A\",\"ExID\":\"EX-1\",\"FillPrice\":100.25}",
+                "{\"Status\":\"InProcess\",\"ClOrdId\":\"SAAMP-B\"}",
+                "{\"Status\":\"Failed\",\"ClOrdId\":\"SAAMP-C\",\"ErrorCode\":\"700\"}"));
+        server.createContext("/v1_3/GetRequestStatus", exchange -> respond(exchange, 200, responses.removeFirst()));
+        server.start();
+        var provider = new PmxConnectTradingProvider(properties, gate, providerAccounts);
+
+        assertThat(provider.queryRequestStatus("SAAMP-A").orElseThrow().state()).isEqualTo(ExecutionState.PROCESSED);
+        assertThat(provider.queryRequestStatus("SAAMP-B").orElseThrow().state()).isEqualTo(ExecutionState.IN_PROCESS);
+        assertThat(provider.queryRequestStatus("SAAMP-C").orElseThrow().state()).isEqualTo(ExecutionState.FAILED);
+    }
+
+    @Test
+    void requestStatus401And500RemainFailuresAndOnlyAuthClosesGate() {
+        var statuses = new java.util.ArrayDeque<>(java.util.List.of(401, 500));
+        server.createContext("/v1_3/GetRequestStatus", exchange -> {
+            int status = statuses.removeFirst();
+            respond(exchange, status, "{\"status\":" + status + ",\"error_code\":561,\"message\":\"Failure\"}");
+        });
+        server.start();
+        var provider = new PmxConnectTradingProvider(properties, gate, providerAccounts);
+
+        assertThatThrownBy(() -> provider.queryRequestStatus("SAAMP-A"))
+                .isInstanceOfSatisfying(PmxConnectException.class,
+                        error -> assertThat(error.httpStatus()).isEqualTo(401));
+        assertThatThrownBy(() -> provider.queryRequestStatus("SAAMP-B"))
+                .isInstanceOfSatisfying(PmxConnectException.class,
+                        error -> assertThat(error.httpStatus()).isEqualTo(500));
+        verify(gate, times(1)).close("PMXCONNECT_AUTH_FAILURE");
+    }
+
+    @Test
+    void requestStatus403ClosesExecutionGate() {
+        server.createContext("/v1_3/GetRequestStatus", exchange -> respond(exchange, 403,
+                "{\"status\":403,\"error_code\":561,\"message\":\"Forbidden\"}"));
+        server.start();
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .queryRequestStatus("SAAMP-A"))
+                .isInstanceOfSatisfying(PmxConnectException.class,
+                        error -> assertThat(error.httpStatus()).isEqualTo(403));
+        verify(gate).close("PMXCONNECT_AUTH_FAILURE");
+    }
+
+    @Test
+    void requestStatusTimeoutRemainsIndeterminate() {
+        properties.getProvider().getPmx().setRequestTimeout(Duration.ofMillis(50));
+        server.createContext("/v1_3/GetRequestStatus", exchange -> {
+            try {
+                Thread.sleep(250);
+                respond(exchange, 200, "{\"Status\":\"Processed\"}");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                exchange.close();
+            }
+        });
+        server.start();
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .queryRequestStatus("SAAMP-A"))
+                .isInstanceOfSatisfying(PmxConnectException.class,
+                        error -> assertThat(error.httpStatus()).isZero());
+        verify(gate, never()).close(anyString());
+    }
+
+    @Test
+    void requestStatusNetworkFailureRemainsIndeterminate() {
+        server.start();
+        var provider = new PmxConnectTradingProvider(properties, gate, providerAccounts);
+        server.stop(0);
+        server = null;
+
+        assertThatThrownBy(() -> provider.queryRequestStatus("SAAMP-A"))
+                .isInstanceOfSatisfying(PmxConnectException.class,
+                        error -> assertThat(error.httpStatus()).isZero());
+        verify(gate, never()).close(anyString());
+    }
+
+    @Test
+    void invalidRequestStatusResponseFailsClosed() {
+        server.createContext("/v1_3/GetRequestStatus", exchange -> respond(exchange, 200, "{\"result\":{}}"));
+        server.start();
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .queryRequestStatus("SAAMP-A"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("aucun statut");
+    }
+
+    @Test
+    void tradeSubmissionRemainsDisabledWithoutOfficialContract() {
+        var provider = new PmxConnectTradingProvider(properties, gate, providerAccounts);
+
+        assertThat(provider.supportsSpotOrderSubmission()).isFalse();
+        assertThatThrownBy(() -> provider.submitSpotOrder(null))
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessageContaining("UAT");
+    }
+
+    private void spotContexts(String metals, String fx) {
+        server.createContext("/v1_3/GetSpotRates/MTL", exchange -> respond(exchange, 200, metals));
+        server.createContext("/v1_3/GetSpotRates/FOR", exchange -> respond(exchange, 200, fx));
     }
 
     private static String jwt(String header, String payload) {

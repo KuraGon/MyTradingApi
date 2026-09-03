@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PmxConnectJsonTest {
 
@@ -100,5 +101,58 @@ class PmxConnectJsonTest {
         assertThat(error.httpStatus()).isEqualTo(400);
         assertThat(error.errorCode()).isEqualTo(631);
         assertThat(error.errorMessage()).isEqualTo("Client Order ID does not exist.");
+    }
+
+    @Test
+    void preservesSpotRateScalesFromOneToFiveDecimals() {
+        var quotes = json.readSpotRates("""
+                {"result":[
+                  {"Pair":"XAUUSD","Ask":1.1,"Bid":1.0},
+                  {"Pair":"XAGUSD","Ask":2.12,"Bid":2.11},
+                  {"Pair":"XPTUSD","Ask":3.1234,"Bid":3.1233},
+                  {"Pair":"XPDUSD","Ask":4.12345,"Bid":4.12344}
+                ]}
+                """, OffsetDateTime.parse("2026-09-03T12:00:00Z"));
+
+        assertThat(quotes).extracting(q -> q.ask().scale()).containsExactly(1, 2, 4, 5);
+        assertThat(quotes).extracting(q -> q.bid().scale()).containsExactly(1, 2, 4, 5);
+    }
+
+    @Test
+    void rejectsMissingSpotRateValue() {
+        assertThatThrownBy(() -> json.readSpotRates(
+                "{\"result\":[{\"Pair\":\"XAUEUR\",\"Ask\":100.1}]}", OffsetDateTime.now()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("incomplète");
+    }
+
+    @Test
+    void rejectsInvalidSpotRateResponse() {
+        assertThatThrownBy(() -> json.readSpotRates("not-json", OffsetDateTime.now()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("illisible");
+    }
+
+    @Test
+    void mapsKnownRequestStatusesWithoutInventingAdditionalStates() {
+        assertThat(json.readRequestStatus("{\"Status\":\"Processed\",\"FillPrice\":100.25}", "SAAMP-A").state())
+                .isEqualTo(com.saamp.trading.provider.ExecutionState.PROCESSED);
+        assertThat(json.readRequestStatus("{\"RequestStatus\":\"InProcess\"}", "SAAMP-B").state())
+                .isEqualTo(com.saamp.trading.provider.ExecutionState.IN_PROCESS);
+        assertThat(json.readRequestStatus("{\"State\":\"Failed\",\"ErrorCode\":\"700\"}", "SAAMP-C").state())
+                .isEqualTo(com.saamp.trading.provider.ExecutionState.FAILED);
+        assertThatThrownBy(() -> json.readRequestStatus("{\"Status\":\"PartiallyFilled\"}", "SAAMP-D"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("inconnu");
+    }
+
+    @Test
+    void rejectsInvalidOrStatelessRequestStatusResponse() {
+        assertThatThrownBy(() -> json.readRequestStatus("{\"result\":{}}", "SAAMP-A"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("aucun statut");
+        assertThatThrownBy(() -> json.readRequestStatus("not-json", "SAAMP-A"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("illisible");
     }
 }

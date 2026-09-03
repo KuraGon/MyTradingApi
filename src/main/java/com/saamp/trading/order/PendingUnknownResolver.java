@@ -36,8 +36,11 @@ public class PendingUnknownResolver {
                     orders.markPendingUnknown(order.id(), "SUBMISSION_STATE_UNKNOWN", "Recovery after interrupted provider submission");
                     order = orders.findById(order.id()).orElseThrow();
                 }
+                log.debug("Querying provider status for order {} / ClOrdId {}", order.id(), order.clOrdId());
                 var report = provider.queryRequestStatus(order.clOrdId());
                 if (report.isPresent()) {
+                    log.info("Provider status {} received for order {} / ClOrdId {}",
+                            report.get().state(), order.id(), order.clOrdId());
                     if (report.get().state() == ExecutionState.PROCESSED) {
                         var account = accounts.findById(order.accountId()).orElseThrow();
                         var quote = pricing.quoteForExecution(order.companyId(), order.asset(), account.baseCurrency());
@@ -45,13 +48,18 @@ public class PendingUnknownResolver {
                         continue;
                     }
                     if (report.get().state() == ExecutionState.FAILED) {
+                        if ("631".equals(report.get().errorCode())) {
+                            log.warn("Provider confirms unknown ClOrdId for order {} (error 631); rejecting without retransmission",
+                                    order.id());
+                        }
                         events.handleRejected(order, report.get().errorCode(), report.get().errorMessage());
                         continue;
                     }
                 }
                 scheduleAgain(order);
             } catch (RuntimeException e) {
-                log.warn("Unable to resolve order {} / ClOrdId {}: {}", order.id(), order.clOrdId(), e.getMessage());
+                log.warn("Unable to resolve order {} / ClOrdId {} ({})",
+                        order.id(), order.clOrdId(), e.getClass().getSimpleName());
                 scheduleAgain(order);
             }
         }

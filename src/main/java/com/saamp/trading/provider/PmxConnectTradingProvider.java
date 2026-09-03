@@ -94,10 +94,13 @@ public class PmxConnectTradingProvider implements TradingProvider {
     public Optional<ExecutionReport> queryRequestStatus(String clientOrderId) {
         try {
             String body = post("GetRequestStatus", Map.of("ClOrdId", clientOrderId));
-            return Optional.of(json.readRequestStatus(body, clientOrderId));
+            ExecutionReport report = json.readRequestStatus(body, clientOrderId);
+            log.debug("PMXConnect GetRequestStatus returned {} for ClOrdId {}", report.state(), clientOrderId);
+            return Optional.of(report);
         } catch (PmxConnectException e) {
             if (e.isRequestNotFound631()) {
                 // Only 631 is conclusive: PMXecute has no trace of this deterministic ClOrdId.
+                log.warn("PMXConnect confirms unknown ClOrdId {} with error 631", clientOrderId);
                 return Optional.of(new ExecutionReport(
                         ExecutionState.FAILED, clientOrderId, null, null, "631",
                         "Client Order ID does not exist; request was not transmitted"));
@@ -151,6 +154,9 @@ public class PmxConnectTradingProvider implements TradingProvider {
                 executionGate.close("PMXCONNECT_AUTH_FAILURE");
                 log.error("PMXConnect authentication/authorization failure: HTTP {}, code {}. Execution gate closed.",
                         response.statusCode(), error.errorCode());
+            } else {
+                log.warn("PMXConnect call failed: endpoint={}, HTTP={}, code={}",
+                        request.uri().getPath(), response.statusCode(), error.errorCode());
             }
             String message = error.message() != null ? error.message() : error.errorMessage();
             throw new PmxConnectException(response.statusCode(), error.errorCode(), message);
@@ -158,6 +164,8 @@ public class PmxConnectTradingProvider implements TradingProvider {
             Thread.currentThread().interrupt();
             throw new PmxConnectException(0, null, "PMXConnect request interrupted");
         } catch (IOException e) {
+            log.warn("PMXConnect network call failed: endpoint={}, failure={}",
+                    request.uri().getPath(), e.getClass().getSimpleName());
             throw new PmxConnectException(0, null, "PMXConnect network failure: " + e.getMessage());
         }
     }

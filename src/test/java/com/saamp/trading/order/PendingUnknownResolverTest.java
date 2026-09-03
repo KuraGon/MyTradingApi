@@ -73,6 +73,35 @@ class PendingUnknownResolverTest {
         verify(orders, never()).scheduleNextResolution(anyLong(), anyInt(), any(), anyBoolean());
     }
 
+    @Test
+    void inProcessStatusKeepsOrderUnknownAndSchedulesAnotherStatusQuery() {
+        TradingOrder order = order("still-in-process");
+        when(orders.findPendingUnknownDue(50)).thenReturn(List.of(order));
+        when(provider.queryRequestStatus(order.clOrdId())).thenReturn(Optional.of(
+                new ExecutionReport(ExecutionState.IN_PROCESS, order.clOrdId(), null, null, null, null)));
+
+        resolver.resolveDue();
+
+        verify(provider).queryRequestStatus(order.clOrdId());
+        verify(provider, never()).submitSpotOrder(any());
+        verifyNoInteractions(events);
+        verify(orders).scheduleNextResolution(eq(order.id()), eq(1), any(), eq(false));
+    }
+
+    @Test
+    void providerStatusFailureKeepsOrderUnknownAndNeverRetransmits() {
+        TradingOrder order = order("status-timeout");
+        when(orders.findPendingUnknownDue(50)).thenReturn(List.of(order));
+        when(provider.queryRequestStatus(order.clOrdId())).thenThrow(new RuntimeException("provider response unavailable"));
+
+        resolver.resolveDue();
+
+        verify(provider).queryRequestStatus(order.clOrdId());
+        verify(provider, never()).submitSpotOrder(any());
+        verifyNoInteractions(events);
+        verify(orders).scheduleNextResolution(eq(order.id()), eq(1), any(), eq(false));
+    }
+
     private TradingOrder order(String key) {
         return new TradingOrder(10L, 5L, 42L, null, Asset.XAU, "XAUEUR", OrderSide.BUY, OrderType.SPOT,
                 BigDecimal.ONE, QuantityUnit.OZ, BigDecimal.ONE, OrderStatus.PENDING_UNKNOWN,

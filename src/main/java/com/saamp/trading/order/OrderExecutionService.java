@@ -13,6 +13,8 @@ import com.saamp.trading.reservation.ReservationRepository;
 import com.saamp.trading.reservation.ReservationService;
 import com.saamp.trading.risk.MarginRateRepository;
 import org.springframework.http.HttpStatus;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,6 +24,7 @@ import java.math.RoundingMode;
 /** Implements the irreversible SPOT workflow with pre-order coverage, persistent reservations and idempotence. */
 @Service
 public class OrderExecutionService {
+    private static final Logger log = LoggerFactory.getLogger(OrderExecutionService.class);
     private final AccountRepository accounts;
     private final BalanceRepository balances;
     private final PricingRepository pricingRepository;
@@ -85,6 +88,7 @@ public class OrderExecutionService {
             return new OrderPreviewResponse(duplicate.id(),duplicate.asset(),duplicate.side(),duplicate.quantityOz(),duplicate.pair(),
                     duplicate.indicativeClientPrice(),duplicate.createdAt(),BigDecimal.ZERO,BigDecimal.ZERO,duplicate.idempotencyKey());
         }
+        log.debug("Created provider correlation ClOrdId {} for order {}", clOrdId, orderId);
 
         BigDecimal reservedCash = BigDecimal.ZERO;
         BigDecimal reservedMetal = BigDecimal.ZERO;
@@ -138,11 +142,15 @@ public class OrderExecutionService {
         orders.markPending(orderId);
         OrderAcknowledgement ack;
         try {
+            log.info("Submitting SPOT order {} with ClOrdId {} to {}", orderId, order.clOrdId(), provider.sourceName());
             ack = provider.submitSpotOrder(new SpotOrderRequest(order.clOrdId(),order.pair(),order.side(),order.quantityOz()));
         } catch (RuntimeException providerFailure) {
+            log.warn("Provider submission outcome unknown for order {} / ClOrdId {} ({})",
+                    orderId, order.clOrdId(), providerFailure.getClass().getSimpleName());
             orders.markPendingUnknown(orderId,"PROVIDER_UNCERTAIN",providerFailure.getMessage());
             return orders.findById(orderId).orElseThrow();
         }
+        log.info("Provider acknowledgement {} for order {} / ClOrdId {}", ack.state(), orderId, order.clOrdId());
         if (ack.state()==AcknowledgementState.IN_PROCESS) {
             orders.markPendingUnknown(orderId,"IN_PROCESS",ack.errorMessage());
         } else if (ack.state()==AcknowledgementState.REJECTED) {
