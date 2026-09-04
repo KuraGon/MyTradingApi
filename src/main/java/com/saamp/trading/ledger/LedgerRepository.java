@@ -31,11 +31,6 @@ public class LedgerRepository {
         return key.getKey().longValue();
     }
 
-    public List<LedgerEntry> findRecent(long accountId, int limit) {
-        return jdbc.query("SELECT * FROM trading_ledger_entry WHERE account_id=? ORDER BY created_at DESC,id DESC LIMIT ?", (rs,n) ->
-                map(rs), accountId, limit);
-    }
-
     /**
      * Lit une page stable du ledger immuable, strictement limitée au compte demandé.
      *

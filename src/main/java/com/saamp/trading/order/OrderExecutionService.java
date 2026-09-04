@@ -56,7 +56,7 @@ public class OrderExecutionService {
             TradingOrder o = existing.get();
             ensureOwnership(o, companyId);
             return new OrderPreviewResponse(o.id(),o.asset(),o.side(),o.quantityOz(),o.pair(),o.indicativeClientPrice(),o.createdAt(),
-                    BigDecimal.ZERO,BigDecimal.ZERO,o.idempotencyKey());
+                    BigDecimal.ZERO,BigDecimal.ZERO);
         }
 
         BigDecimal qtyOz = TroyWeightConverter.toTroyOunces(request.quantity(), request.unit());
@@ -86,7 +86,7 @@ public class OrderExecutionService {
             TradingOrder duplicate = orders.findByIdempotencyKey(request.idempotencyKey()).orElseThrow();
             ensureOwnership(duplicate, companyId);
             return new OrderPreviewResponse(duplicate.id(),duplicate.asset(),duplicate.side(),duplicate.quantityOz(),duplicate.pair(),
-                    duplicate.indicativeClientPrice(),duplicate.createdAt(),BigDecimal.ZERO,BigDecimal.ZERO,duplicate.idempotencyKey());
+                    duplicate.indicativeClientPrice(),duplicate.createdAt(),BigDecimal.ZERO,BigDecimal.ZERO);
         }
         log.debug("Created provider correlation ClOrdId {} for order {}", clOrdId, orderId);
 
@@ -111,7 +111,7 @@ public class OrderExecutionService {
                 reservedCash = required;
             }
         }
-        return new OrderPreviewResponse(orderId,request.asset(),request.side(),qtyOz,quote.pair(),indicativeClient,quote.priceAsOf(),reservedCash,reservedMetal,request.idempotencyKey());
+        return new OrderPreviewResponse(orderId,request.asset(),request.side(),qtyOz,quote.pair(),indicativeClient,quote.priceAsOf(),reservedCash,reservedMetal);
     }
 
     public TradingOrder submit(long orderId, long companyId, long userId) {

@@ -7,6 +7,7 @@ import com.saamp.trading.common.TradingException;
 import com.saamp.trading.config.SecurityConfig;
 import com.saamp.trading.domain.*;
 import com.saamp.trading.order.OrderExecutionService;
+import com.saamp.trading.order.OrderPreviewResponse;
 import com.saamp.trading.order.OrderRepository;
 import com.saamp.trading.order.TradingOrder;
 import com.saamp.trading.reservation.ReservationService;
@@ -21,12 +22,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.type.filter.AnnotationTypeFilter;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -41,6 +45,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(controllers = {AccountController.class, OrderController.class, StatementController.class})
@@ -51,6 +56,7 @@ class ClientConsultationControllerTest {
     private static final long COMPANY_ID = 42L;
     private static final String ACCOUNT_READ = "MYTRADING_ACCOUNT_READ";
     private static final String HISTORY_READ = "MYTRADING_HISTORY_READ";
+    private static final String ORDER_WRITE = "MYTRADING_ORDER_WRITE";
     private static final OffsetDateTime NOW = OffsetDateTime.parse("2026-09-03T10:00:00Z");
 
     @Autowired
@@ -211,6 +217,64 @@ class ClientConsultationControllerTest {
     }
 
     @Test
+    void previewExposesOnlyClientSafeFields() throws Exception {
+        when(execution.preview(eq(COMPANY_ID), eq(7L), any())).thenReturn(new OrderPreviewResponse(
+                71L, Asset.XAU, OrderSide.BUY, BigDecimal.ONE, "XAUEUR", new BigDecimal("2000.00"),
+                NOW, new BigDecimal("2010.00"), BigDecimal.ZERO));
+
+        var response = mvc.perform(post("/api/v1/accounts/me/orders/preview")
+                        .contentType("application/json")
+                        .content("""
+                                {"asset":"XAU","side":"BUY","quantity":1,"unit":"OZ","idempotencyKey":"preview-key"}
+                                """)
+                        .with(jwtWith(ORDER_WRITE)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.idempotencyKey").doesNotExist())
+                .andExpect(jsonPath("$.clOrdId").doesNotExist())
+                .andExpect(jsonPath("$.clientOrderId").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+
+        var json = objectMapper.readTree(response);
+        assertThat(json.propertyStream().map(java.util.Map.Entry::getKey).toList())
+                .containsExactlyInAnyOrder("orderId", "asset", "side", "quantityOz", "pair",
+                        "indicativeClientPrice", "priceAsOf", "reservedCash", "reservedMetal");
+    }
+
+    @Test
+    void removedLedgerRouteIsNotExposed() throws Exception {
+        mvc.perform(get("/api/v1/accounts/me/ledger").with(jwtWith(HISTORY_READ)))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void clientControllersNeverReturnRawBusinessTypes() throws ClassNotFoundException {
+        var scanner = new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter(new AnnotationTypeFilter(RestController.class));
+        var controllerMethods = scanner.findCandidateComponents("com.saamp.trading.api").stream()
+                .map(definition -> definition.getBeanClassName())
+                .map(className -> {
+                    try {
+                        return Class.forName(className);
+                    } catch (ClassNotFoundException exception) {
+                        throw new IllegalStateException(exception);
+                    }
+                })
+                .flatMap(type -> List.of(type.getDeclaredMethods()).stream())
+                .toList();
+
+        assertThat(controllerMethods).allSatisfy(method -> assertThat(method.getGenericReturnType().getTypeName())
+                .doesNotContain("com.saamp.trading.ledger.LedgerEntry")
+                .doesNotContain("com.saamp.trading.order.TradingOrder")
+                .doesNotContain("com.saamp.trading.risk.RiskResult"));
+    }
+
+    @Test
+    void removedRiskRouteIsNotExposed() throws Exception {
+        mvc.perform(get("/api/v1/accounts/me/risk").with(jwtWith(ACCOUNT_READ)))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void statementUsesCurrentAccountServiceResultAndHidesInternalAuditFields() throws Exception {
         var statement = new AccountStatement(ACCOUNT_ID, Asset.EUR, Instant.parse("2026-09-03T10:00:00Z"),
                 List.of(new StatementLine(1L, Asset.EUR, new BigDecimal("100.00"),
@@ -247,6 +311,17 @@ class ClientConsultationControllerTest {
         mvc.perform(get("/api/v1/accounts/me/orders").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/accounts/me/statement").with(jwtWith(ACCOUNT_READ)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void previewKeepsOrderWritePermission() throws Exception {
+        mvc.perform(post("/api/v1/accounts/me/orders/preview")
+                        .contentType("application/json")
+                        .content("""
+                                {"asset":"XAU","side":"BUY","quantity":1,"unit":"OZ","idempotencyKey":"preview-key"}
+                                """)
+                        .with(jwtWith(HISTORY_READ)))
                 .andExpect(status().isForbidden());
     }
 
