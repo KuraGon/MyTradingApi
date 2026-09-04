@@ -35,6 +35,7 @@ class OrderExecutionServiceTest {
     private static final long ACCOUNT_ID = 7L;
     private static final long USER_ID = 99L;
     private static final long ORDER_ID = 123L;
+    private static final OffsetDateTime EXPIRES_AT = OffsetDateTime.parse("2026-09-03T10:02:00Z");
 
     @Mock AccountRepository accounts;
     @Mock BalanceRepository balances;
@@ -82,6 +83,7 @@ class OrderExecutionServiceTest {
 
         assertThat(result.reservedMetal()).isEqualByComparingTo("5");
         assertThat(result.reservedCash()).isEqualByComparingTo("0");
+        assertThat(result.expiresAt()).isEqualTo(EXPIRES_AT);
         verify(reservations).reserve(ACCOUNT_ID, Asset.XAU, new BigDecimal("5.000000"), ORDER_ID);
         verify(reservations, never()).reserve(eq(ACCOUNT_ID), eq(Asset.EUR), any(BigDecimal.class), eq(ORDER_ID));
     }
@@ -203,6 +205,7 @@ class OrderExecutionServiceTest {
         when(pricing.quoteForDisplay(COMPANY_ID, Asset.XAU, Asset.EUR)).thenReturn(quote("100.000000", "100.000000"));
         when(orders.insertDraft(anyLong(), anyLong(), any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), anyString(), anyString()))
                 .thenReturn(ORDER_ID);
+        lenient().when(reservationRepository.findEarliestExpiryForOrder(ORDER_ID)).thenReturn(Optional.of(EXPIRES_AT));
 
         OrderPreviewResponse first = service.preview(COMPANY_ID, USER_ID, request(Asset.XAU, OrderSide.BUY, "1", key));
         OrderPreviewResponse second = service.preview(COMPANY_ID, USER_ID, request(Asset.XAU, OrderSide.BUY, "1", key));
@@ -307,6 +310,7 @@ class OrderExecutionServiceTest {
         when(pricing.quoteForDisplay(COMPANY_ID, asset, Asset.EUR)).thenReturn(quote("100.000000", "100.000000"));
         when(orders.insertDraft(anyLong(), anyLong(), any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), anyString(), anyString()))
                 .thenReturn(ORDER_ID);
+        lenient().when(reservationRepository.findEarliestExpiryForOrder(ORDER_ID)).thenReturn(Optional.of(EXPIRES_AT));
     }
 
     private void stubSubmit(BigDecimal indicativeClientPrice, String key) {

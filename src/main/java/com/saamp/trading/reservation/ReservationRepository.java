@@ -9,6 +9,7 @@ import java.math.BigDecimal;
 import java.sql.PreparedStatement;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public class ReservationRepository {
@@ -39,6 +40,19 @@ public class ReservationRepository {
     public boolean hasActiveForOrder(long orderId) {
         Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM trading_reservation WHERE order_id=? AND status='ACTIVE' AND expires_at>NOW()", Integer.class, orderId);
         return count != null && count > 0;
+    }
+
+    /**
+     * Retient la première échéance persistée afin que le preview soit désactivé avant toute expiration partielle.
+     *
+     * @param orderId ordre dont les réservations portent la durée de validité effective
+     * @return première échéance persistée, ou vide si l'ordre ne possède aucune réservation
+     */
+    public Optional<OffsetDateTime> findEarliestExpiryForOrder(long orderId) {
+        return jdbc.query("SELECT MIN(expires_at) AS expires_at FROM trading_reservation WHERE order_id=?",
+                (rs, rowNum) -> rs.getObject("expires_at", OffsetDateTime.class), orderId).stream()
+                .filter(java.util.Objects::nonNull)
+                .findFirst();
     }
 
     public void consumeForOrder(long orderId) {

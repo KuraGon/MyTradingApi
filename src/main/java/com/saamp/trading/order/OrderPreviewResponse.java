@@ -7,4 +7,4 @@ import java.time.OffsetDateTime;
 
 public record OrderPreviewResponse(long orderId, Asset asset, OrderSide side, BigDecimal quantityOz,
                                    String pair, BigDecimal indicativeClientPrice, OffsetDateTime priceAsOf,
-                                   BigDecimal reservedCash, BigDecimal reservedMetal) {}
+                                   OffsetDateTime expiresAt, BigDecimal reservedCash, BigDecimal reservedMetal) {}

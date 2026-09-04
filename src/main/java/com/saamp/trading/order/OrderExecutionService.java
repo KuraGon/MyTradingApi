@@ -55,7 +55,7 @@ public class OrderExecutionService {
         if (existing.isPresent()) {
             TradingOrder o = existing.get();
             ensureOwnership(o, companyId);
-            return new OrderPreviewResponse(o.id(),o.asset(),o.side(),o.quantityOz(),o.pair(),o.indicativeClientPrice(),o.createdAt(),
+            return new OrderPreviewResponse(o.id(),o.asset(),o.side(),o.quantityOz(),o.pair(),o.indicativeClientPrice(),o.createdAt(),previewExpiry(o.id()),
                     BigDecimal.ZERO,BigDecimal.ZERO);
         }
 
@@ -86,7 +86,7 @@ public class OrderExecutionService {
             TradingOrder duplicate = orders.findByIdempotencyKey(request.idempotencyKey()).orElseThrow();
             ensureOwnership(duplicate, companyId);
             return new OrderPreviewResponse(duplicate.id(),duplicate.asset(),duplicate.side(),duplicate.quantityOz(),duplicate.pair(),
-                    duplicate.indicativeClientPrice(),duplicate.createdAt(),BigDecimal.ZERO,BigDecimal.ZERO);
+                    duplicate.indicativeClientPrice(),duplicate.createdAt(),previewExpiry(duplicate.id()),BigDecimal.ZERO,BigDecimal.ZERO);
         }
         log.debug("Created provider correlation ClOrdId {} for order {}", clOrdId, orderId);
 
@@ -111,7 +111,8 @@ public class OrderExecutionService {
                 reservedCash = required;
             }
         }
-        return new OrderPreviewResponse(orderId,request.asset(),request.side(),qtyOz,quote.pair(),indicativeClient,quote.priceAsOf(),reservedCash,reservedMetal);
+        return new OrderPreviewResponse(orderId,request.asset(),request.side(),qtyOz,quote.pair(),indicativeClient,
+                quote.priceAsOf(),previewExpiry(orderId),reservedCash,reservedMetal);
     }
 
     public TradingOrder submit(long orderId, long companyId, long userId) {
@@ -177,6 +178,10 @@ public class OrderExecutionService {
 
     private TradingAccount accountForCompany(long companyId) {
         return accounts.findByCompanyId(companyId).orElseThrow(() -> new TradingException(HttpStatus.NOT_FOUND,"TRADING_ACCOUNT_NOT_FOUND","Compte Trading absent"));
+    }
+    private java.time.OffsetDateTime previewExpiry(long orderId) {
+        return reservationRepository.findEarliestExpiryForOrder(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order preview has no persisted reservation expiry"));
     }
     private void ensureTradingAllowed(TradingAccount account) {
         if (account.status()!=AccountStatus.ACTIVE)

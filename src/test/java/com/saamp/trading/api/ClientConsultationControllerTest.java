@@ -10,6 +10,8 @@ import com.saamp.trading.order.OrderExecutionService;
 import com.saamp.trading.order.OrderPreviewResponse;
 import com.saamp.trading.order.OrderRepository;
 import com.saamp.trading.order.TradingOrder;
+import com.saamp.trading.pricing.ClientQuote;
+import com.saamp.trading.pricing.PricingService;
 import com.saamp.trading.reservation.ReservationService;
 import com.saamp.trading.risk.RiskResult;
 import com.saamp.trading.risk.RiskService;
@@ -48,7 +50,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@WebMvcTest(controllers = {AccountController.class, OrderController.class, StatementController.class})
+@WebMvcTest(controllers = {AccountController.class, OrderController.class, PricingController.class, StatementController.class})
 @Import({SecurityConfig.class, ApiExceptionHandler.class})
 class ClientConsultationControllerTest {
 
@@ -82,6 +84,8 @@ class ClientConsultationControllerTest {
     private OrderExecutionService execution;
     @MockitoBean
     private OrderRepository orders;
+    @MockitoBean
+    private PricingService pricing;
     @MockitoBean
     private StatementService statements;
 
@@ -220,7 +224,7 @@ class ClientConsultationControllerTest {
     void previewExposesOnlyClientSafeFields() throws Exception {
         when(execution.preview(eq(COMPANY_ID), eq(7L), any())).thenReturn(new OrderPreviewResponse(
                 71L, Asset.XAU, OrderSide.BUY, BigDecimal.ONE, "XAUEUR", new BigDecimal("2000.00"),
-                NOW, new BigDecimal("2010.00"), BigDecimal.ZERO));
+                NOW, NOW.plusMinutes(2), new BigDecimal("2010.00"), BigDecimal.ZERO));
 
         var response = mvc.perform(post("/api/v1/accounts/me/orders/preview")
                         .contentType("application/json")
@@ -229,6 +233,7 @@ class ClientConsultationControllerTest {
                                 """)
                         .with(jwtWith(ORDER_WRITE)))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.expiresAt").value("2026-09-03T10:02:00Z"))
                 .andExpect(jsonPath("$.idempotencyKey").doesNotExist())
                 .andExpect(jsonPath("$.clOrdId").doesNotExist())
                 .andExpect(jsonPath("$.clientOrderId").doesNotExist())
@@ -237,7 +242,58 @@ class ClientConsultationControllerTest {
         var json = objectMapper.readTree(response);
         assertThat(json.propertyStream().map(java.util.Map.Entry::getKey).toList())
                 .containsExactlyInAnyOrder("orderId", "asset", "side", "quantityOz", "pair",
-                        "indicativeClientPrice", "priceAsOf", "reservedCash", "reservedMetal");
+                        "indicativeClientPrice", "priceAsOf", "expiresAt", "reservedCash", "reservedMetal");
+    }
+
+    @Test
+    void pricesExposeOnlyClientPricesAndRequireAccountRead() throws Exception {
+        when(pricing.quoteForDisplay(COMPANY_ID, Asset.XAU, Asset.EUR)).thenReturn(new ClientQuote(
+                Asset.XAU, "XAUEUR", new BigDecimal("1990.00"), new BigDecimal("2000.00"),
+                new BigDecimal("2010.0000"), new BigDecimal("1980.0000"),
+                new BigDecimal("2010.00"), new BigDecimal("1980.00"),
+                new BigDecimal("0.005"), new BigDecimal("0.005"), 3, NOW));
+
+        mvc.perform(get("/api/v1/accounts/me/prices").param("assets", "XAU").with(jwtWith(ACCOUNT_READ)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].asset").value("XAU"))
+                .andExpect(jsonPath("$[0].buyPrice").value(2010.00))
+                .andExpect(jsonPath("$[0].sellPrice").value(1980.00))
+                .andExpect(jsonPath("$[0].marketAsk").doesNotExist())
+                .andExpect(jsonPath("$[0].marketBid").doesNotExist())
+                .andExpect(jsonPath("$[0].spreadBuy").doesNotExist())
+                .andExpect(jsonPath("$[0].spreadSell").doesNotExist());
+
+        mvc.perform(get("/api/v1/accounts/me/prices").param("assets", "XAU").with(jwtWith(HISTORY_READ)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void submitReturnsClientOrderViewWithoutProviderOrIdempotencyFields() throws Exception {
+        TradingOrder order = mock(TradingOrder.class);
+        when(order.id()).thenReturn(71L);
+        when(order.asset()).thenReturn(Asset.XAU);
+        when(order.pair()).thenReturn("XAUEUR");
+        when(order.side()).thenReturn(OrderSide.BUY);
+        when(order.orderType()).thenReturn(OrderType.SPOT);
+        when(order.requestedQuantity()).thenReturn(BigDecimal.ONE);
+        when(order.requestedUnit()).thenReturn(QuantityUnit.OZ);
+        when(order.quantityOz()).thenReturn(BigDecimal.ONE);
+        when(order.status()).thenReturn(OrderStatus.PENDING_UNKNOWN);
+        when(order.indicativeClientPrice()).thenReturn(new BigDecimal("2010.00"));
+        when(order.createdAt()).thenReturn(NOW);
+        when(order.submittedAt()).thenReturn(NOW.plusSeconds(1));
+        when(execution.submit(71L, COMPANY_ID, 7L)).thenReturn(order);
+
+        mvc.perform(post("/api/v1/accounts/me/orders/71/submit").with(jwtWith(ORDER_WRITE)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(71L))
+                .andExpect(jsonPath("$.status").value("PENDING_UNKNOWN"))
+                .andExpect(jsonPath("$.idempotencyKey").doesNotExist())
+                .andExpect(jsonPath("$.clOrdId").doesNotExist())
+                .andExpect(jsonPath("$.stonexExid").doesNotExist())
+                .andExpect(jsonPath("$.stonexErrorCode").doesNotExist())
+                .andExpect(jsonPath("$.spreadApplied").doesNotExist())
+                .andExpect(jsonPath("$.saampRevenue").doesNotExist());
     }
 
     @Test

@@ -6,6 +6,7 @@ import com.saamp.trading.account.PositionService;
 import com.saamp.trading.reservation.ReservationService;
 import com.saamp.trading.risk.RiskService;
 import com.saamp.trading.security.CurrentTraderService;
+import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -47,6 +48,7 @@ public class AccountController {
      * @return informations du compte utiles au front MyTrading
      */
     @GetMapping
+    @Operation(summary = "Lire le compte courant", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ACCOUNT_READ.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public AccountView account(Authentication authentication) {
         var trader = traders.current(authentication);
@@ -60,6 +62,7 @@ public class AccountController {
      * @return soldes comptables et disponibles du compte courant
      */
     @GetMapping("/balances")
+    @Operation(summary = "Lire les soldes du compte courant", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ACCOUNT_READ.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public List<BalanceView> balances(Authentication authentication) {
         var trader = traders.current(authentication);
@@ -77,6 +80,7 @@ public class AccountController {
      * @return positions métal valorisées du compte courant
      */
     @GetMapping("/positions")
+    @Operation(summary = "Lire les positions métal valorisées", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ACCOUNT_READ.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public List<PositionView> positions(Authentication authentication) {
         var trader = traders.current(authentication);
@@ -91,6 +95,7 @@ public class AccountController {
      * @return indicateurs financiers du compte courant
      */
     @GetMapping("/summary")
+    @Operation(summary = "Lire la synthèse financière", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ACCOUNT_READ.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public AccountSummaryView summary(Authentication authentication) {
         var trader = traders.current(authentication);

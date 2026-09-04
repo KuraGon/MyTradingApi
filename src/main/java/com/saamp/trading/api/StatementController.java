@@ -4,6 +4,7 @@ import com.saamp.trading.account.AccountService;
 import com.saamp.trading.security.CurrentTraderService;
 import com.saamp.trading.statement.AccountStatement;
 import com.saamp.trading.statement.StatementService;
+import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,6 +37,7 @@ public class StatementController {
      * @return page du relevé du compte de la société courante
      */
     @GetMapping
+    @Operation(summary = "Lire le relevé du compte", description = "Permissions : MYTRADING_ACCESS + MYTRADING_HISTORY_READ. Pagination descendante par curseur exclusif.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_HISTORY_READ')")
     public AccountStatement statement(Authentication authentication,
                                       @RequestParam(required = false) Long cursor,
