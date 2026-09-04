@@ -1,9 +1,12 @@
 package com.saamp.trading.integration;
 
 import com.saamp.trading.account.BalanceRepository;
+import com.saamp.trading.as400.As400SyncOutboxRepository;
 import com.saamp.trading.common.TradingException;
 import com.saamp.trading.config.TradingProperties;
 import com.saamp.trading.domain.Asset;
+import com.saamp.trading.ledger.LedgerRepository;
+import com.saamp.trading.ledger.LedgerService;
 import com.saamp.trading.reservation.ReservationRepository;
 import com.saamp.trading.reservation.ReservationService;
 import liquibase.integration.spring.SpringLiquibase;
@@ -17,6 +20,8 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import javax.sql.DataSource;
 import java.math.BigDecimal;
 import java.sql.Connection;
@@ -41,6 +46,9 @@ class TradingDatabaseInvariantTest {
     private AnnotationConfigApplicationContext context;
     private JdbcTemplate jdbc;
     private ReservationService reservations;
+    private FailingSettlement failingSettlement;
+    private As400SyncOutboxRepository as400Outbox;
+    private TransactionTemplate transactions;
 
     @BeforeAll
     void startDatabase() {
@@ -48,6 +56,9 @@ class TradingDatabaseInvariantTest {
         context = new AnnotationConfigApplicationContext(TestConfig.class);
         jdbc = context.getBean(JdbcTemplate.class);
         reservations = context.getBean(ReservationService.class);
+        failingSettlement = context.getBean(FailingSettlement.class);
+        as400Outbox = context.getBean(As400SyncOutboxRepository.class);
+        transactions = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
     }
 
     @AfterAll
@@ -128,12 +139,50 @@ class TradingDatabaseInvariantTest {
     }
 
     @Test
-    void liquibaseAppliedChangelogs001To005AndCriticalTriggersAreActive() {
+    void filledSettlementRollsBackLedgerBalancesAndOutboxAsOneTransaction() {
+        long companyId = COMPANY_IDS.incrementAndGet();
+        long accountId = createAccount(companyId);
+        long orderId = createDraftOrder(accountId, companyId, "atomic-settlement-" + companyId);
+        jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,'XAU',10.000000)", accountId);
+        jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,'EUR',1000.000000)", accountId);
+
+        assertThatThrownBy(() -> failingSettlement.postThenFail(accountId, orderId))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("failure after ledger and outbox");
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_ledger_entry WHERE order_id=? AND entry_type='TRADE'", Integer.class, orderId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_sync_outbox WHERE order_id=?", Integer.class, orderId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT quantity FROM trading_balance WHERE account_id=? AND asset='XAU'", BigDecimal.class, accountId)).isEqualByComparingTo("10.000000");
+        assertThat(jdbc.queryForObject("SELECT quantity FROM trading_balance WHERE account_id=? AND asset='EUR'", BigDecimal.class, accountId)).isEqualByComparingTo("1000.000000");
+    }
+
+    @Test
+    void twoSuccessiveClaimsCannotAcquireTheSameActiveOutboxEvent() {
+        transactions.executeWithoutResult(transaction -> {
+            long companyId = COMPANY_IDS.incrementAndGet();
+            long accountId = createAccount(companyId);
+            long orderId = createDraftOrder(accountId, companyId, "outbox-claim-" + companyId);
+            jdbc.update("UPDATE trading_as400_sync_outbox SET next_attempt_at=NOW()+INTERVAL '1 hour' WHERE status<>'SYNCED'");
+            jdbc.update("INSERT INTO trading_as400_sync_outbox(order_id,target) VALUES (?,'WEIGHT_ACCOUNT')", orderId);
+
+            var firstClaim = as400Outbox.claimDue(1, Duration.ofMinutes(5));
+            var secondClaim = as400Outbox.claimDue(1, Duration.ofMinutes(5));
+
+            assertThat(firstClaim).hasSize(1);
+            assertThat(firstClaim.getFirst().orderId()).isEqualTo(orderId);
+            assertThat(secondClaim).isEmpty();
+            transaction.setRollbackOnly();
+        });
+    }
+
+    @Test
+    void liquibaseAppliedChangelogs001To008AndCriticalTriggersAreActive() {
         Integer changelogCount = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM databasechangelog
-                WHERE id IN ('001-trading-core','002-trading-pricing','003-trading-defaults','004-trading-reconciliation','005-pmxconnect-corrections')
+                WHERE id IN ('001-trading-core','002-trading-pricing','003-trading-defaults','004-trading-reconciliation',
+                  '005-pmxconnect-corrections','006-as400-synchronization','007-as400-ste-width','008-as400-outbox-claim')
                 """, Integer.class);
-        assertThat(changelogCount).isEqualTo(5);
+        assertThat(changelogCount).isEqualTo(8);
 
         List<String> triggers = jdbc.queryForList("""
                 SELECT tgname FROM pg_trigger
@@ -247,6 +296,38 @@ class TradingDatabaseInvariantTest {
         @Bean
         ReservationService reservationService(BalanceRepository balances, ReservationRepository reservations, TradingProperties properties) {
             return new ReservationService(balances, reservations, properties);
+        }
+
+        @Bean
+        LedgerRepository ledgerRepository(JdbcTemplate jdbc) {
+            return new LedgerRepository(jdbc);
+        }
+
+        @Bean
+        As400SyncOutboxRepository as400SyncOutboxRepository(JdbcTemplate jdbc) {
+            return new As400SyncOutboxRepository(jdbc);
+        }
+
+        @Bean
+        LedgerService ledgerService(BalanceRepository balances, LedgerRepository ledger, As400SyncOutboxRepository outbox) {
+            return new LedgerService(balances, ledger, outbox);
+        }
+
+        @Bean
+        FailingSettlement failingSettlement(LedgerService ledger) {
+            return new FailingSettlement(ledger);
+        }
+    }
+
+    static class FailingSettlement {
+        private final LedgerService ledger;
+        FailingSettlement(LedgerService ledger) { this.ledger = ledger; }
+
+        @Transactional
+        public void postThenFail(long accountId, long orderId) {
+            ledger.postTrade(accountId, Asset.XAU, BigDecimal.ONE, Asset.EUR,
+                    new BigDecimal("-100.000000"), orderId, "test:atomicity");
+            throw new IllegalStateException("failure after ledger and outbox");
         }
     }
 }

@@ -122,9 +122,9 @@ L'adaptateur lève volontairement une `UnsupportedOperationException`. Les paylo
 
 ---
 
-## 5. AS400 — lecture seule
+## 5. AS400 — lecture et synchronisation encadrée
 
-**Aucune écriture sur l'AS400, jamais.**
+La lecture AS400 est autorisée hors chemin critique. L'écriture directe est autorisée **uniquement** sur le compte poids `GESCOMF.CLCPDP03` du NUCLI trading. Toute écriture directe sur `FMPRO.PCGMLFCM` est interdite : la comptabilité passe exclusivement par son programme d'intégration. PostgreSQL et `trading_ledger_entry` restent la source de vérité ; la synchronisation AS400 est asynchrone, idempotente et rejouable.
 
 | Règle | Motif |
 |---|---|

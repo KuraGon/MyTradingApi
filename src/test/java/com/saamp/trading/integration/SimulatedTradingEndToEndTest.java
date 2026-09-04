@@ -141,6 +141,7 @@ class SimulatedTradingEndToEndTest {
         assertThat(activeReservation(acceptedBuy, Asset.EUR)).isEqualByComparingTo("1012.020000");
         submit(acceptedBuy).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("FILLED"));
         assertSettled(acceptedBuy, "CONSUMED", 2);
+        assertThat(outboxCount(acceptedBuy)).isEqualTo(2);
         assertBalance(Asset.EUR, "98990.000000");
         assertBalance(Asset.XAU, "110.000000");
         assertThat(provider.submissions()).isEqualTo(1);
@@ -196,6 +197,7 @@ class SimulatedTradingEndToEndTest {
                 .isEqualTo(ClientOrderIdFactory.fromIdempotencyKey(key("buy-accepted")));
         submit(acceptedBuy).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("FILLED"));
         assertThat(provider.submissions()).isEqualTo(3);
+        assertThat(outboxCount(acceptedBuy)).isEqualTo(2);
         assertThat(ledgerCount(acceptedBuy)).isEqualTo(2);
         assertBalance(Asset.EUR, "110751.200000");
         assertBalance(Asset.XAU, "-10.000000");
@@ -208,6 +210,7 @@ class SimulatedTradingEndToEndTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING_UNKNOWN"));
         assertThat(activeReservationCount(pendingProcessed)).isOne();
         assertThat(ledgerCount(pendingProcessed)).isZero();
+        assertThat(outboxCount(pendingProcessed)).isZero();
         int callsAfterUnknown = provider.submissions();
         submit(pendingProcessed).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING_UNKNOWN"));
         assertThat(provider.submissions()).isEqualTo(callsAfterUnknown);
@@ -216,6 +219,7 @@ class SimulatedTradingEndToEndTest {
         resolver.resolveDue();
         assertThat(orders.findById(pendingProcessed).orElseThrow().status()).isEqualTo(OrderStatus.FILLED);
         assertThat(ledgerCount(pendingProcessed)).isEqualTo(2);
+        assertThat(outboxCount(pendingProcessed)).isEqualTo(2);
         assertThat(activeReservationCount(pendingProcessed)).isZero();
         resolver.resolveDue();
         assertThat(ledgerCount(pendingProcessed)).isEqualTo(2);
@@ -230,6 +234,7 @@ class SimulatedTradingEndToEndTest {
         assertThat(orders.findById(pending631).orElseThrow().status()).isEqualTo(OrderStatus.REJECTED);
         assertThat(activeReservationCount(pending631)).isZero();
         assertThat(ledgerCount(pending631)).isZero();
+        assertThat(outboxCount(pending631)).isZero();
         assertThat(provider.submissions()).isEqualTo(callsBefore631Resolution);
         assertThat(provider.submissions()).isEqualTo(5);
 
@@ -341,6 +346,10 @@ class SimulatedTradingEndToEndTest {
         }
         return jdbc.queryForObject("SELECT COUNT(*) FROM trading_ledger_entry WHERE account_id=? AND order_id=?",
                 Integer.class, accountId, orderId);
+    }
+
+    private int outboxCount(long orderId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_sync_outbox WHERE order_id=?", Integer.class, orderId);
     }
 
     private void assertSettled(long orderId, String reservationStatus, int expectedLedgerEntries) {

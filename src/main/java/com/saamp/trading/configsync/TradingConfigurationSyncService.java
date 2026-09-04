@@ -26,14 +26,16 @@ public class TradingConfigurationSyncService {
         if (current != null && c.configVersion() < current) return; // out-of-order event
         if (current == null) {
             jdbc.update("""
-                    INSERT INTO trading_account(company_id,base_currency,status,deal_limit,position_limit,loss_limit,config_version)
-                    VALUES (?,?,?,?,?,?,?)
-                    """, c.companyId(),c.baseCurrency().name(),c.status().name(),c.dealLimit(),c.positionLimit(),c.lossLimit(),c.configVersion());
+                    INSERT INTO trading_account(company_id,base_currency,status,deal_limit,position_limit,loss_limit,
+                      as400_ste,as400_nucli_commercial,as400_nucli_trading,config_version) VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """, c.companyId(),c.baseCurrency().name(),c.status().name(),c.dealLimit(),c.positionLimit(),c.lossLimit(),
+                    c.as400Ste(),c.as400NucliCommercial(),c.as400NucliTrading(),c.configVersion());
         } else {
             jdbc.update("""
                     UPDATE trading_account SET base_currency=?,status=?,deal_limit=?,position_limit=?,loss_limit=?,
-                      config_version=?,updated_at=NOW() WHERE company_id=?
-                    """, c.baseCurrency().name(),c.status().name(),c.dealLimit(),c.positionLimit(),c.lossLimit(),c.configVersion(),c.companyId());
+                      as400_ste=?,as400_nucli_commercial=?,as400_nucli_trading=?,config_version=?,updated_at=NOW() WHERE company_id=?
+                    """, c.baseCurrency().name(),c.status().name(),c.dealLimit(),c.positionLimit(),c.lossLimit(),
+                    c.as400Ste(),c.as400NucliCommercial(),c.as400NucliTrading(),c.configVersion(),c.companyId());
         }
     }
 

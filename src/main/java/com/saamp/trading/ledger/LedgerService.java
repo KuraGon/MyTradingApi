@@ -4,6 +4,7 @@ import com.saamp.trading.account.BalanceRepository;
 import com.saamp.trading.domain.Asset;
 import com.saamp.trading.domain.LedgerEntryType;
 import com.saamp.trading.common.TradingException;
+import com.saamp.trading.as400.As400SyncOutboxRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,10 +19,12 @@ import java.math.BigDecimal;
 public class LedgerService {
     private final BalanceRepository balances;
     private final LedgerRepository ledger;
+    private final As400SyncOutboxRepository as400Outbox;
 
-    public LedgerService(BalanceRepository balances, LedgerRepository ledger) {
+    public LedgerService(BalanceRepository balances, LedgerRepository ledger, As400SyncOutboxRepository as400Outbox) {
         this.balances = balances;
         this.ledger = ledger;
+        this.as400Outbox = as400Outbox;
     }
 
     @Transactional
@@ -44,5 +47,6 @@ public class LedgerService {
                           long orderId, String createdBy) {
         post(accountId, metal, metalDelta, LedgerEntryType.TRADE, orderId, null, createdBy);
         post(accountId, currency, cashDelta, LedgerEntryType.TRADE, orderId, null, createdBy);
+        as400Outbox.enqueueFilled(orderId);
     }
 }

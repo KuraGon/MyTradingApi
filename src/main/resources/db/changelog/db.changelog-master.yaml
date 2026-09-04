@@ -9,3 +9,9 @@ databaseChangeLog:
       file: db/changelog/004-trading-reconciliation.sql
   - include:
       file: db/changelog/005-pmxconnect-corrections.sql
+  - include:
+      file: db/changelog/006-as400-synchronization.sql
+  - include:
+      file: db/changelog/007-as400-ste-width.sql
+  - include:
+      file: db/changelog/008-as400-outbox-claim.sql
