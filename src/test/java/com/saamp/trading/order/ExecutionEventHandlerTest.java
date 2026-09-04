@@ -47,11 +47,33 @@ class ExecutionEventHandlerTest {
         handler.handleFilled(order, account, "EX-100", new BigDecimal("100.000000"), quote, "system:test");
 
         verify(ledger, times(1)).postTrade(eq(account.id()), eq(Asset.XAU), eq(new BigDecimal("1")), eq(Asset.EUR),
-                eq(new BigDecimal("-100.100000")), eq(order.id()), eq("system:test"));
+                eq(new BigDecimal("-100.10")), eq(order.id()), eq("system:test"));
         verify(orders, times(1)).markFilled(eq(order.id()), eq("EX-100"), eq(new BigDecimal("100.000000")),
                 any(BigDecimal.class), eq(new BigDecimal("100.100000")), eq(new BigDecimal("0.001000")),
                 eq(1), eq(new BigDecimal("0.100000")), eq(new BigDecimal("100.10")));
         verify(reservations, times(1)).consumeForOrder(order.id());
+    }
+
+    @Test
+    void cashLedgerUsesPublishedGrossAmountRoundedToCurrencyScale() {
+        TradingOrder order = order();
+        TradingAccount account = account();
+        ClientQuote quote = new ClientQuote(Asset.XAU, "XAUEUR",
+                new BigDecimal("3000.000000"), new BigDecimal("3001.000000"),
+                new BigDecimal("3010.003000"), new BigDecimal("2991.000000"),
+                new BigDecimal("3010.003000"), new BigDecimal("2991.000000"),
+                new BigDecimal("0.003000"), new BigDecimal("0.003000"), 1, OffsetDateTime.now());
+        when(pricing.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(
+                new AssetConfig(Asset.XAU, new BigDecimal("0.000001"), 6, new BigDecimal("0.002000"), true)));
+
+        handler.handleFilled(order, account, "EX-ROUND", new BigDecimal("3001.000000"), quote, "system:test");
+
+        verify(ledger).postTrade(eq(account.id()), eq(Asset.XAU), eq(new BigDecimal("1")), eq(Asset.EUR),
+                eq(new BigDecimal("-3010.00")), eq(order.id()), eq("system:test"));
+        verify(orders).markFilled(eq(order.id()), eq("EX-ROUND"), eq(new BigDecimal("3001.000000")),
+                any(BigDecimal.class), eq(new BigDecimal("3010.003000")), eq(new BigDecimal("0.003000")),
+                eq(1), eq(new BigDecimal("9.003000")), eq(new BigDecimal("3010.00")));
+        verify(reservations).consumeForOrder(order.id());
     }
 
     @Test

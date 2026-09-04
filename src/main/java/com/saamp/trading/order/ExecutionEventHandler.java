@@ -40,11 +40,11 @@ public class ExecutionEventHandler {
         AssetConfig config = pricing.findAssetConfig(order.asset()).orElseThrow();
         BigDecimal clientPriceRaw = PriceMath.rawClientPrice(marketRate, spread, order.side());
         BigDecimal clientPrice = PriceMath.clientPrice(marketRate, spread, order.side(), config.quoteScale());
-        BigDecimal cashAmount = order.quantityOz().multiply(clientPrice).setScale(6, RoundingMode.HALF_UP);
-        BigDecimal gross = cashAmount.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal cashAmountRaw = order.quantityOz().multiply(clientPrice);
+        BigDecimal gross = cashAmountRaw.setScale(2, RoundingMode.HALF_UP);
         BigDecimal revenue = order.quantityOz().multiply(clientPrice.subtract(marketRate).abs()).setScale(6, RoundingMode.HALF_UP);
         BigDecimal metalDelta = order.side() == OrderSide.BUY ? order.quantityOz() : order.quantityOz().negate();
-        BigDecimal cashDelta = order.side() == OrderSide.BUY ? cashAmount.negate() : cashAmount;
+        BigDecimal cashDelta = order.side() == OrderSide.BUY ? gross.negate() : gross;
 
         ledger.postTrade(account.id(), order.asset(), metalDelta, account.baseCurrency(), cashDelta, order.id(), actor);
         orders.markFilled(order.id(), executionId, marketRate, clientPriceRaw, clientPrice, spread, quoteAtSubmission.spreadConfigVersion(), revenue, gross);
