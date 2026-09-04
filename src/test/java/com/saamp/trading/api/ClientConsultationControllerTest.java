@@ -8,7 +8,7 @@ import com.saamp.trading.config.SecurityConfig;
 import com.saamp.trading.domain.*;
 import com.saamp.trading.order.OrderExecutionService;
 import com.saamp.trading.order.OrderPreviewResponse;
-import com.saamp.trading.order.OrderRepository;
+import com.saamp.trading.order.OrderQueryService;
 import com.saamp.trading.order.TradingOrder;
 import com.saamp.trading.pricing.ClientQuote;
 import com.saamp.trading.pricing.PricingService;
@@ -83,7 +83,7 @@ class ClientConsultationControllerTest {
     @MockitoBean
     private OrderExecutionService execution;
     @MockitoBean
-    private OrderRepository orders;
+    private OrderQueryService orders;
     @MockitoBean
     private PricingService pricing;
     @MockitoBean
@@ -205,19 +205,56 @@ class ClientConsultationControllerTest {
         when(order.quantityOz()).thenReturn(BigDecimal.ONE);
         when(order.status()).thenReturn(OrderStatus.PENDING_UNKNOWN);
         when(order.createdAt()).thenReturn(NOW);
-        when(orders.findRecent(ACCOUNT_ID, 100)).thenReturn(List.of(order));
+        OrderView view = OrderView.from(order);
+        when(orders.page(account, null, null)).thenReturn(new OrderPageView(List.of(view), null, false));
 
         mvc.perform(get("/api/v1/accounts/me/orders").with(jwtWith(HISTORY_READ)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].status").value("PENDING_UNKNOWN"))
-                .andExpect(jsonPath("$[0].id").value(70L))
-                .andExpect(jsonPath("$[0].clientOrderId").doesNotExist())
-                .andExpect(jsonPath("$[0].idempotencyKey").doesNotExist())
+                .andExpect(jsonPath("$.items[0].status").value("PENDING_UNKNOWN"))
+                .andExpect(jsonPath("$.items[0].id").value(70L))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist())
+                .andExpect(jsonPath("$.hasMore").value(false))
+                .andExpect(jsonPath("$.items[0].clientOrderId").doesNotExist())
+                .andExpect(jsonPath("$.items[0].idempotencyKey").doesNotExist())
                 .andExpect(content().string(not(containsString("stonex"))))
                 .andExpect(content().string(not(containsString("spreadApplied"))))
                 .andExpect(content().string(not(containsString("saampRevenue"))));
 
-        verify(orders).findRecent(ACCOUNT_ID, 100);
+        verify(orders).page(account, null, null);
+    }
+
+    @Test
+    void orderDetailReturnsPendingUnknownWithoutInternalFields() throws Exception {
+        TradingOrder order = mock(TradingOrder.class);
+        when(order.id()).thenReturn(70L);
+        when(order.asset()).thenReturn(Asset.XAU);
+        when(order.side()).thenReturn(OrderSide.BUY);
+        when(order.orderType()).thenReturn(OrderType.SPOT);
+        when(order.status()).thenReturn(OrderStatus.PENDING_UNKNOWN);
+        when(order.createdAt()).thenReturn(NOW);
+        OrderView view = OrderView.from(order);
+        when(orders.detail(account, 70L)).thenReturn(view);
+
+        mvc.perform(get("/api/v1/accounts/me/orders/70").with(jwtWith(HISTORY_READ)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(70L))
+                .andExpect(jsonPath("$.status").value("PENDING_UNKNOWN"))
+                .andExpect(jsonPath("$.idempotencyKey").doesNotExist())
+                .andExpect(jsonPath("$.clOrdId").doesNotExist())
+                .andExpect(content().string(not(containsString("stonex"))));
+    }
+
+    @Test
+    void unknownOrCrossCompanyOrderDetailIsNotFound() throws Exception {
+        when(orders.detail(account, 404L)).thenThrow(new TradingException(HttpStatus.NOT_FOUND,
+                "ORDER_NOT_FOUND", "Ordre introuvable"));
+        when(orders.detail(account, 405L)).thenThrow(new TradingException(HttpStatus.NOT_FOUND,
+                "ORDER_NOT_FOUND", "Ordre introuvable"));
+
+        mvc.perform(get("/api/v1/accounts/me/orders/404").with(jwtWith(HISTORY_READ)))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("ORDER_NOT_FOUND"));
+        mvc.perform(get("/api/v1/accounts/me/orders/405").with(jwtWith(HISTORY_READ)))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("ORDER_NOT_FOUND"));
     }
 
     @Test
@@ -365,6 +402,8 @@ class ClientConsultationControllerTest {
     @Test
     void historyEndpointsRequireHistoryReadPermission() throws Exception {
         mvc.perform(get("/api/v1/accounts/me/orders").with(jwtWith(ACCOUNT_READ)))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/accounts/me/orders/70").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/accounts/me/statement").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isForbidden());

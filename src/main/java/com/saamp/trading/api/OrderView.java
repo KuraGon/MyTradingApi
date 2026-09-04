@@ -9,7 +9,7 @@ public record OrderView(long id, Asset asset, String pair, OrderSide side, Order
                         BigDecimal requestedQuantity, QuantityUnit requestedUnit, BigDecimal quantityOz,
                         OrderStatus status, BigDecimal indicativeClientPrice, BigDecimal clientPrice,
                         BigDecimal grossAmount, Instant createdAt,
-                        Instant submittedAt, Instant executedAt) {
+                        Instant submittedAt, Instant executedAt, String reasonCode) {
 
     /**
      * Sélectionne uniquement les données d'ordre utiles au client.
@@ -21,7 +21,12 @@ public record OrderView(long id, Asset asset, String pair, OrderSide side, Order
         return new OrderView(order.id(), order.asset(), order.pair(), order.side(), order.orderType(),
                 order.requestedQuantity(), order.requestedUnit(), order.quantityOz(), order.status(),
                 order.indicativeClientPrice(), order.clientPrice(), order.grossAmount(),
-                toInstant(order.createdAt()), toInstant(order.submittedAt()), toInstant(order.executedAt()));
+                toInstant(order.createdAt()), toInstant(order.submittedAt()), toInstant(order.executedAt()), reasonCode(order));
+    }
+
+    private static String reasonCode(com.saamp.trading.order.TradingOrder order) {
+        if (order.status() != OrderStatus.REJECTED) return null;
+        return "PRICE_MOVED".equals(order.stonexErrorCode()) ? "PRICE_MOVED" : "PROVIDER_REJECTED";
     }
 
     private static Instant toInstant(java.time.OffsetDateTime value) {

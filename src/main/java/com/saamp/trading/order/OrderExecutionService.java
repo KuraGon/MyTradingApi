@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Map;
 
 /** Implements the irreversible SPOT workflow with pre-order coverage, persistent reservations and idempotence. */
 @Service
@@ -137,7 +138,8 @@ public class OrderExecutionService {
         if (drift.compareTo(config.driftTolerance())>0) {
             orders.markRejected(orderId,"PRICE_MOVED","Le prix a dépassé la tolérance de dérive");
             reservations.releaseForOrder(orderId);
-            throw new TradingException(HttpStatus.CONFLICT,"PRICE_MOVED","Le prix a évolué au-delà de la tolérance; nouvelle cotation requise");
+            throw new TradingException(HttpStatus.CONFLICT,"PRICE_MOVED","Le prix a évolué au-delà de la tolérance; nouvelle cotation requise",
+                    Map.of("currentClientPrice", freshClient, "priceAsOf", fresh.priceAsOf(), "pair", fresh.pair()));
         }
 
         orders.markPending(orderId);

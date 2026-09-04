@@ -33,7 +33,16 @@ public class OrderRepository {
 
     public Optional<TradingOrder> findById(long id) { return jdbc.query("SELECT * FROM trading_order WHERE id=?", this::map, id).stream().findFirst(); }
     public Optional<TradingOrder> findByIdempotencyKey(String key) { return jdbc.query("SELECT * FROM trading_order WHERE idempotency_key=?", this::map, key).stream().findFirst(); }
-    public List<TradingOrder> findRecent(long accountId, int limit) { return jdbc.query("SELECT * FROM trading_order WHERE account_id=? ORDER BY created_at DESC,id DESC LIMIT ?", this::map, accountId, limit); }
+    public List<TradingOrder> findPage(long accountId, Long cursor, int limit) {
+        if (cursor == null) {
+            return jdbc.query("SELECT * FROM trading_order WHERE account_id=? ORDER BY id DESC LIMIT ?", this::map, accountId, limit);
+        }
+        return jdbc.query("SELECT * FROM trading_order WHERE account_id=? AND id<? ORDER BY id DESC LIMIT ?", this::map, accountId, cursor, limit);
+    }
+
+    public Optional<TradingOrder> findByIdAndAccountId(long id, long accountId) {
+        return jdbc.query("SELECT * FROM trading_order WHERE id=? AND account_id=?", this::map, id, accountId).stream().findFirst();
+    }
 
     public void markPending(long id) { jdbc.update("UPDATE trading_order SET status='PENDING', submitted_at=NOW() WHERE id=?", id); }
     public void markPendingUnknown(long id, String code, String message) {

@@ -178,7 +178,13 @@ class SimulatedTradingEndToEndTest {
         long priceMoved = preview("BUY", "1", "price-moved");
         int ledgerBeforePriceMoved = ledgerCount(null);
         setMarketPrice("101.000000", "102.000000");
-        submit(priceMoved).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PRICE_MOVED"));
+        submit(priceMoved).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("PRICE_MOVED"))
+                .andExpect(jsonPath("$.currentClientPrice").isNumber())
+                .andExpect(jsonPath("$.priceAsOf").isString())
+                .andExpect(jsonPath("$.pair").value("XAUEUR"))
+                .andExpect(jsonPath("$.marketAsk").doesNotExist())
+                .andExpect(jsonPath("$.marketBid").doesNotExist());
         assertThat(provider.submissions()).isEqualTo(3);
         assertThat(ledgerCount(priceMoved)).isZero();
         assertThat(ledgerCount(null)).isEqualTo(ledgerBeforePriceMoved);
@@ -198,6 +204,8 @@ class SimulatedTradingEndToEndTest {
         provider.nextSubmissionUnknown();
         long pendingProcessed = preview("BUY", "1", "pending-processed");
         submit(pendingProcessed).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING_UNKNOWN"));
+        getWithPermissions("/api/v1/accounts/me/orders/" + pendingProcessed, HISTORY_READ)
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING_UNKNOWN"));
         assertThat(activeReservationCount(pendingProcessed)).isOne();
         assertThat(ledgerCount(pendingProcessed)).isZero();
         int callsAfterUnknown = provider.submissions();
@@ -233,7 +241,8 @@ class SimulatedTradingEndToEndTest {
         getWithPermissions("/api/v1/accounts/me/summary", ACCOUNT_READ)
                 .andExpect(status().isOk()).andExpect(jsonPath("$.risk.totalFunds").value(110650.20));
         getWithPermissions("/api/v1/accounts/me/orders", HISTORY_READ)
-                .andExpect(status().isOk()).andExpect(jsonPath("$", hasSize(6)));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items", hasSize(6)))
+                .andExpect(jsonPath("$.hasMore").value(false));
         getWithPermissions("/api/v1/accounts/me/statement", HISTORY_READ)
                 .andExpect(status().isOk()).andExpect(jsonPath("$.lines", hasSize(10)));
     }

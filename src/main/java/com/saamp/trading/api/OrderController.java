@@ -9,14 +9,12 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-
 @RestController
 @RequestMapping("/api/v1/accounts/me/orders")
 public class OrderController {
-    private final CurrentTraderService traders; private final AccountService accounts; private final OrderExecutionService execution; private final OrderRepository orders;
-    public OrderController(CurrentTraderService traders, AccountService accounts, OrderExecutionService execution, OrderRepository orders) {
-        this.traders=traders; this.accounts=accounts; this.execution=execution; this.orders=orders;
+    private final CurrentTraderService traders; private final AccountService accounts; private final OrderExecutionService execution; private final OrderQueryService queries;
+    public OrderController(CurrentTraderService traders, AccountService accounts, OrderExecutionService execution, OrderQueryService queries) {
+        this.traders=traders; this.accounts=accounts; this.execution=execution; this.queries=queries;
     }
 
     @PostMapping("/preview")
@@ -34,10 +32,20 @@ public class OrderController {
     }
 
     @GetMapping
-    @Operation(summary = "Lire l'historique des ordres", description = "Permissions : MYTRADING_ACCESS + MYTRADING_HISTORY_READ.")
+    @Operation(summary = "Lire l'historique paginé des ordres", description = "Permissions : MYTRADING_ACCESS + MYTRADING_HISTORY_READ. Pagination keyset par id décroissant, curseur exclusif, sans OFFSET.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_HISTORY_READ')")
-    public List<OrderView> history(Authentication authentication,@RequestParam(defaultValue="100") int limit) {
+    public OrderPageView history(Authentication authentication,
+                                 @RequestParam(required = false) Long cursor,
+                                 @RequestParam(required = false) Integer limit) {
         var trader=traders.current(authentication); var account=accounts.requireByCompany(trader.companyId());
-        return orders.findRecent(account.id(),Math.min(Math.max(limit,1),500)).stream().map(OrderView::from).toList();
+        return queries.page(account, cursor, limit);
+    }
+
+    @GetMapping("/{orderId}")
+    @Operation(summary = "Suivre un ordre", description = "Permissions : MYTRADING_ACCESS + MYTRADING_HISTORY_READ. Route canonique de polling d'un ordre PENDING ou PENDING_UNKNOWN ; ne transmet aucun ordre.")
+    @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_HISTORY_READ')")
+    public OrderView detail(Authentication authentication, @PathVariable long orderId) {
+        var trader=traders.current(authentication); var account=accounts.requireByCompany(trader.companyId());
+        return queries.detail(account, orderId);
     }
 }

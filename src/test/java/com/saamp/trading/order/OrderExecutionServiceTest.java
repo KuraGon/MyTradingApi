@@ -146,7 +146,13 @@ class OrderExecutionServiceTest {
 
         assertThatThrownBy(() -> service.submit(ORDER_ID, COMPANY_ID, USER_ID))
                 .isInstanceOfSatisfying(TradingException.class,
-                        ex -> assertThat(ex.getCode()).isEqualTo("PRICE_MOVED"));
+                        ex -> {
+                            assertThat(ex.getCode()).isEqualTo("PRICE_MOVED");
+                            assertThat(ex.getProperties()).containsEntry("currentClientPrice", new BigDecimal("101.000000"))
+                                    .containsEntry("pair", "XAUEUR")
+                                    .containsKey("priceAsOf")
+                                    .doesNotContainKeys("marketAsk", "marketBid", "spread");
+                        });
 
         verify(orders).markRejected(eq(ORDER_ID), eq("PRICE_MOVED"), anyString());
         verify(reservations).releaseForOrder(ORDER_ID);

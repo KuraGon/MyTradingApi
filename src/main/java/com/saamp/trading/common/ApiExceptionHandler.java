@@ -17,6 +17,7 @@ public class ApiExceptionHandler {
         problem.setTitle(ex.getCode());
         problem.setType(URI.create("urn:saamp:trading:error:" + ex.getCode().toLowerCase()));
         problem.setProperty("code", ex.getCode());
+        ex.getProperties().forEach(problem::setProperty);
         return problem;
     }
 

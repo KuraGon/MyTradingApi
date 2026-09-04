@@ -22,7 +22,10 @@ Forme d'une erreur fonctionnelle :
   "status": 409,
   "detail": "Le prix a évolué au-delà de la tolérance; nouvelle cotation requise",
   "instance": "/api/v1/accounts/me/orders/71/submit",
-  "code": "PRICE_MOVED"
+  "code": "PRICE_MOVED",
+  "currentClientPrice": 2022.00,
+  "priceAsOf": "2026-09-03T10:00:08Z",
+  "pair": "XAUEUR"
 }
 ```
 
@@ -38,11 +41,12 @@ Le front doit piloter son comportement avec `status` et `code`, pas avec le text
 | `GET` | `/api/v1/accounts/me/summary` | `MYTRADING_ACCESS` + `MYTRADING_ACCOUNT_READ` |
 | `GET` | `/api/v1/accounts/me/prices` | `MYTRADING_ACCESS` + `MYTRADING_ACCOUNT_READ` |
 | `GET` | `/api/v1/accounts/me/orders` | `MYTRADING_ACCESS` + `MYTRADING_HISTORY_READ` |
+| `GET` | `/api/v1/accounts/me/orders/{orderId}` | `MYTRADING_ACCESS` + `MYTRADING_HISTORY_READ` |
 | `GET` | `/api/v1/accounts/me/statement` | `MYTRADING_ACCESS` + `MYTRADING_HISTORY_READ` |
 | `POST` | `/api/v1/accounts/me/orders/preview` | `MYTRADING_ACCESS` + `MYTRADING_ORDER_WRITE` |
 | `POST` | `/api/v1/accounts/me/orders/{orderId}/submit` | `MYTRADING_ACCESS` + `MYTRADING_ORDER_WRITE` |
 
-Il n'existe pas de route publique `/accounts/me/ledger`, `/accounts/me/risk`, ni de route de consultation d'un ordre isolé.
+Il n'existe pas de route publique `/accounts/me/ledger` ni `/accounts/me/risk`.
 
 ## Consultation du compte
 
@@ -118,6 +122,8 @@ Réponse `200 OK` :
 Erreurs possibles : `401`, `403`, `404 TRADING_ACCOUNT_NOT_FOUND`, `409 MARKET_PRICE_STALE`, `409 SPREAD_NOT_CONFIGURED`, `409 ASSET_NOT_CONFIGURED`, `409 ASSET_DISABLED`, `503 MARKET_PRICE_MISSING`.
 
 Action front : afficher la valorisation publiée par l'API et son horodatage. Ne pas reconstruire `valuation` à partir du prix. En cas de prix absent ou périmé, conserver la dernière vue connue si disponible et signaler que la valorisation ne peut pas être actualisée.
+
+L'unité de position V1 est explicitement l'once troy (`OZ`) : `quantityOz` est la quantité à afficher. Le backend V1 ne fournit aucune préférence d'unité et n'effectue aucune conversion de position en `G` ou `KG`.
 
 ### `GET /api/v1/accounts/me/summary`
 
@@ -248,31 +254,76 @@ Réponse `200 OK` :
   "grossAmount": 2011.00,
   "createdAt": "2026-09-03T10:00:00Z",
   "submittedAt": "2026-09-03T10:00:08Z",
-  "executedAt": "2026-09-03T10:00:09Z"
+  "executedAt": "2026-09-03T10:00:09Z",
+  "reasonCode": null
 }
 ```
 
-`clientPrice`, `grossAmount`, `submittedAt` et `executedAt` peuvent être `null` selon l'état. `status` appartient à `DRAFT`, `VALIDATED`, `PENDING`, `PENDING_UNKNOWN`, `FILLED`, `REJECTED`, `EXPIRED`, `FAILED`.
+`clientPrice`, `grossAmount`, `submittedAt`, `executedAt` et `reasonCode` peuvent être `null` selon l'état. `status` appartient à `DRAFT`, `VALIDATED`, `PENDING`, `PENDING_UNKNOWN`, `FILLED`, `REJECTED`, `EXPIRED`, `FAILED`. Pour un ordre `REJECTED`, `reasonCode` vaut `PRICE_MOVED` lorsque ce motif a été persisté, sinon `PROVIDER_REJECTED`. Aucun code ni message fournisseur brut n'est exposé.
 
 Erreurs possibles : `401`, `403`, `404 ORDER_NOT_FOUND`, `404 TRADING_ACCOUNT_NOT_FOUND`, `409 ACCOUNT_NOT_ACTIVE`, `409 ORDER_NOT_SUBMITTABLE`, `409 RESERVATION_EXPIRED`, `409 PRICE_MOVED`, `409 MARKET_PRICE_STALE`, `503 MARKET_PRICE_MISSING`, `503 EXECUTION_BLOCKED`, `503 PROVIDER_EXECUTION_NOT_READY`.
 
 Action front selon le résultat :
 
 - `FILLED` : ordre exécuté ; afficher le prix client et le montant brut retournés, puis rafraîchir soldes, positions, synthèse, ordres et relevé.
-- `REJECTED` : ordre refusé ; ne pas annoncer une exécution et rafraîchir l'historique.
-- `PRICE_MOVED` est une erreur HTTP `409`, pas un statut d'ordre : ne pas soumettre automatiquement. Demander une nouvelle cotation via un nouveau preview et une nouvelle validation utilisateur.
-- `PENDING_UNKNOWN` : ne jamais afficher « ordre échoué ». Afficher exactement le sens « Execution pending confirmation ». Ne jamais retransmettre automatiquement. Rafraîchir `GET /api/v1/accounts/me/orders` et rechercher le même `id` jusqu'à obtention d'un état terminal.
-- `PENDING` : transmission en cours ; même discipline de non-retransmission et de rafraîchissement que pour `PENDING_UNKNOWN`.
+- `REJECTED` : ordre refusé ; utiliser uniquement `reasonCode`, ne pas annoncer une exécution.
+- `PRICE_MOVED` est une erreur HTTP `409`, pas un statut d'ordre. La nouvelle cotation client est informative : ne jamais resoumettre l'ordre, créer obligatoirement un nouveau preview et demander une nouvelle validation utilisateur.
+- `PENDING_UNKNOWN` : ne jamais afficher « ordre échoué ». Afficher exactement le sens « Execution pending confirmation ». Ne jamais retransmettre automatiquement. Poller `GET /api/v1/accounts/me/orders/{orderId}` à cadence raisonnable jusqu'à un état terminal.
+- `PENDING` : transmission en cours ; même discipline de non-retransmission et de polling du détail que pour `PENDING_UNKNOWN`.
 
 ### `GET /api/v1/accounts/me/orders`
 
-Paramètre query optionnel `limit` : entier, `100` par défaut, ramené dans l'intervalle `1..500`. Corps de requête : aucun.
+Paramètres query optionnels :
 
-Réponse `200 OK` : tableau d'objets ayant exactement la même forme que la réponse de submit ci-dessus, trié du plus récent au plus ancien.
+- `cursor` : identifiant d'ordre exclusif ; absent pour la première page ;
+- `limit` : entier, `100` par défaut, ramené dans l'intervalle `1..500`.
+
+Corps de requête : aucun. La pagination est keyset, sans `OFFSET`, avec un tri stable `id DESC`.
+
+Réponse `200 OK` :
+
+```json
+{
+  "items": [
+    {
+      "id": 71,
+      "asset": "XAU",
+      "pair": "XAUEUR",
+      "side": "BUY",
+      "orderType": "SPOT",
+      "requestedQuantity": 1.000000,
+      "requestedUnit": "OZ",
+      "quantityOz": 1.000000,
+      "status": "PENDING_UNKNOWN",
+      "indicativeClientPrice": 2010.00,
+      "clientPrice": null,
+      "grossAmount": null,
+      "createdAt": "2026-09-03T10:00:00Z",
+      "submittedAt": "2026-09-03T10:00:08Z",
+      "executedAt": null,
+      "reasonCode": null
+    }
+  ],
+  "nextCursor": 71,
+  "hasMore": true
+}
+```
+
+Les objets de `items` ont exactement la forme de `OrderView`. Pour charger la page suivante, réutiliser `nextCursor` comme `cursor` uniquement lorsque `hasMore` vaut `true`.
 
 Erreurs possibles : `400` si `limit` n'est pas un entier, `401`, `403`, `404 TRADING_ACCOUNT_NOT_FOUND`.
 
-Action front : afficher l'historique et utiliser `id` pour suivre un ordre `PENDING` ou `PENDING_UNKNOWN`. Aucun endpoint de détail unitaire n'existe en V1.
+Action front : afficher les ordres dans l'ordre reçu et paginer avec le curseur fourni. Le suivi d'un ordre ne parcourt pas cette collection : il utilise le détail ci-dessous.
+
+### `GET /api/v1/accounts/me/orders/{orderId}`
+
+Paramètre path `orderId` : identifiant de l'ordre. Corps de requête : aucun.
+
+Réponse `200 OK` : un `OrderView` ayant exactement la même forme que la réponse de submit. L'ordre est recherché exclusivement dans le compte de la société authentifiée.
+
+Erreurs possibles : `401`, `403`, `404 ORDER_NOT_FOUND`. Un identifiant absent et un ordre d'une autre société produisent la même réponse `404`.
+
+Action front : route canonique de suivi après un submit retournant `PENDING` ou `PENDING_UNKNOWN`. Poller à cadence raisonnable jusqu'à un état terminal. Cette consultation ne déclenche aucune transmission et il n'existe aucun endpoint de retransmission.
 
 ## Relevé
 
@@ -319,7 +370,7 @@ Action front : afficher les lignes dans l'ordre reçu et paginer avec le curseur
 | Code / cas | HTTP | Signification | Action front |
 |---|---:|---|---|
 | `MARKET_PRICE_STALE` | `409` | Le prix disponible dépasse l'âge maximal accepté. | Bloquer la décision concernée, signaler une cotation indisponible et permettre un rafraîchissement explicite. |
-| `PRICE_MOVED` | `409` | Entre preview et submit, le prix client a dépassé la tolérance. L'ordre concerné est rejeté. | Ne jamais resoumettre. Créer un nouveau preview et demander une nouvelle validation. |
+| `PRICE_MOVED` | `409` | Entre preview et submit, le prix client a dépassé la tolérance. `currentClientPrice`, `priceAsOf` et `pair` donnent la nouvelle cotation client disponible au moment du rejet. | Ne jamais resoumettre, même avec la cotation jointe. Créer un nouveau preview et demander une nouvelle validation. |
 | `INSUFFICIENT_AVAILABLE_BALANCE` | `409` | Le solde net des réservations ne couvre pas la réservation demandée. | Afficher l'insuffisance, rafraîchir les soldes et laisser l'utilisateur modifier son ordre. |
 | `TRADING_ACCOUNT_NOT_FOUND` | `404` | Aucun compte n'est visible pour la société authentifiée. | Afficher un état « compte indisponible » sans tenter un autre identifiant. |
 | `ACCOUNT_NOT_ACTIVE` | `409` | Le compte est `SUSPENDED`, `RISK_RESTRICTED` ou `CLOSED`; preview/submit est interdit. | Désactiver la saisie/soumission et rafraîchir `/accounts/me`. Pour `SUSPENDED`, afficher que le trading est suspendu. |
@@ -328,7 +379,7 @@ Action front : afficher les lignes dans l'ordre reçu et paginer avec le curseur
 | authentification absente/invalide | `401` | Le JWT est absent, expiré, invalide ou son contexte client est inutilisable. Le service possède aussi les codes internes `UNAUTHENTICATED` et `INVALID_TOKEN_SCOPE` lorsqu'ils atteignent le handler. | Relancer le flux d'authentification. Ne jamais journaliser le jeton. |
 | permission absente | `403` | Le JWT est valide mais ne porte pas toutes les permissions de la route. | Masquer l'action concernée ; ne pas réessayer automatiquement. |
 | ressource invisible | `404` | Compte ou ordre absent, y compris ressource appartenant à une autre société. | Afficher « introuvable » sans révéler ni rechercher une autre société. |
-| `PENDING_UNKNOWN` | `200`, champ `status` | État d'exécution indéterminé ; ce n'est pas une erreur HTTP ni un échec confirmé. | Afficher « Execution pending confirmation », ne jamais retransmettre, rafraîchir l'historique. |
+| `PENDING_UNKNOWN` | `200`, champ `status` | État d'exécution indéterminé ; ce n'est pas une erreur HTTP ni un échec confirmé. | Afficher « Execution pending confirmation », ne jamais retransmettre, poller `GET /orders/{orderId}`. |
 
 Autres codes réellement émis sur ces chemins : `ASSET_NOT_CONFIGURED` (`409`), `ASSET_DISABLED` (`409`), `QUANTITY_TOO_SMALL` (`400`), `DEAL_LIMIT_EXCEEDED` (`409`), `POSITION_LIMIT_EXCEEDED` (`409`), `MARGIN_RATE_MISSING` (`409`), `SPREAD_NOT_CONFIGURED` (`409`), `MARKET_PRICE_MISSING` (`503`), `ORDER_NOT_FOUND` (`404`), `ORDER_NOT_SUBMITTABLE` (`409`), `RESERVATION_EXPIRED` (`409`), `EXECUTION_BLOCKED` (`503`), `PROVIDER_EXECUTION_NOT_READY` (`503`) et `DATA_INTEGRITY_VIOLATION` (`409`).
 
@@ -336,29 +387,23 @@ Autres codes réellement émis sur ces chemins : `ASSET_NOT_CONFIGURED` (`409`),
 
 | Écran | Endpoint | Champs utilisés | Disponible | Manquant |
 |---|---|---|---|---|
-| Positions by Metal | `GET /positions` | `asset`, `quantityOz`, `clientPrice`, `valuation`, `priceAsOf` | Oui | Unité d'affichage utilisateur et quantité convertie |
+| Positions by Metal | `GET /positions` | `asset`, `quantityOz`, `clientPrice`, `valuation`, `priceAsOf` | Oui | Rien : l'unité V1 est `OZ` |
 | Summary | `GET /summary` | `baseCurrency`, `status`, `dealLimit`, `positionLimit`, objet `risk` | Oui | Rien pour les agrégats demandés |
 | Net Equity | `GET /summary` | `risk.netEquity`, `baseCurrency` | Oui | Rien |
 | Free Equity | `GET /summary` | `risk.freeEquity`, `baseCurrency` | Oui | Rien |
 | Margin Requirement | `GET /summary` | `risk.marginRequirement`, `baseCurrency` | Oui | Rien |
 | Order Preview | `POST /orders/preview` | `orderId`, `asset`, `side`, `quantityOz`, `pair`, `indicativeClientPrice`, `priceAsOf`, `expiresAt`, `reservedCash`, `reservedMetal` | Oui | Quantité et unité initialement saisies à conserver côté front |
-| Confirmation / Submit | `POST /orders/{orderId}/submit` | tous les champs de `OrderView`, surtout `status`, `clientPrice`, `grossAmount` | Oui | Motif client structuré lorsque `status=REJECTED` |
-| PRICE_MOVED | réponse d'erreur du submit, puis nouveau `POST /preview` | `code`, `status`, `detail` | Partiel | Nouvelle cotation non incluse dans l'erreur |
-| PENDING_UNKNOWN | submit puis `GET /orders` | `id`, `status`, horodatages | Partiel | Endpoint de détail d'un ordre ; état de suivi/résolution plus précis |
-| Orders History | `GET /orders` | tableau de `OrderView` | Partiel | Pagination/curseur et motif client structuré d'un rejet |
+| Confirmation / Submit | `POST /orders/{orderId}/submit` | tous les champs de `OrderView`, surtout `status`, `clientPrice`, `grossAmount`, `reasonCode` | Oui | Rien |
+| PRICE_MOVED | réponse d'erreur du submit, puis nouveau `POST /preview` | `code`, `status`, `detail`, `currentClientPrice`, `priceAsOf`, `pair` | Oui | Rien |
+| PENDING_UNKNOWN | submit puis `GET /orders/{orderId}` | `id`, `status`, horodatages | Oui | Rien |
+| Orders History | `GET /orders` | `items`, `nextCursor`, `hasMore` | Oui | Rien |
 | Statement | `GET /statement` | `accountId`, `baseCurrency`, `generatedAt`, `lines`, `nextCursor`, `hasMore` | Oui | Libellé client localisé de `entryType` (peut être mappé par le front) |
 
 Les abréviations `/positions`, `/summary`, `/orders` et `/statement` dans cette matrice désignent leurs URI complètes sous `/api/v1/accounts/me`.
 
 ## DONNÉES FRONT MANQUANTES
 
-Le contrat actuel ne fournit pas les données suivantes ; elles ne sont pas ajoutées dans cette version documentaire :
-
-- préférence d'unité utilisateur et quantité de position convertie en `G` ou `KG` ; seule `quantityOz` est publiée ;
-- motif client structuré d'un ordre retourné avec `status: REJECTED` ; les erreurs fournisseur internes restent volontairement non exposées ;
-- nouvelle cotation dans la réponse `PRICE_MOVED` ; un nouveau preview est obligatoire ;
-- endpoint de détail d'un ordre et métadonnées de progression de la résolution `PENDING_UNKNOWN` ; le seul rafraîchissement disponible est l'historique récent ;
-- pagination de l'historique des ordres au-delà des 500 plus récents.
+Le contrat front V1 ne présente plus de donnée manquante identifiée. Les détails internes de résolution et les erreurs fournisseur restent volontairement hors contrat : `id`, `status`, les horodatages et le `reasonCode` client-safe suffisent au workflow V1.
 
 ## OpenAPI
 
