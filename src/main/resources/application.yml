@@ -28,6 +28,8 @@ springdoc:
     path: /swagger-ui.html
 
 trading:
+  cors:
+    allowed-origins: ${TRADING_CORS_ALLOWED_ORIGINS:}
   security:
     issuer: ${MYPORTAL_JWT_ISSUER:https://myportal.saamp.com}
     audience: ${MYPORTAL_JWT_AUDIENCE:MYTRADING}

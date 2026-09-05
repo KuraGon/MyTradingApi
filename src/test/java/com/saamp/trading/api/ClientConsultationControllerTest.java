@@ -22,6 +22,8 @@ import com.saamp.trading.statement.StatementLine;
 import com.saamp.trading.statement.StatementService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
@@ -31,6 +33,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -48,11 +51,37 @@ import static org.mockito.Mockito.*;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(controllers = {AccountController.class, OrderController.class, PricingController.class, StatementController.class})
 @Import({SecurityConfig.class, ApiExceptionHandler.class})
+@TestPropertySource(properties = "TRADING_CORS_ALLOWED_ORIGINS=https://saamp.samuel-murgia.fr, https://second.example")
 class ClientConsultationControllerTest {
+
+    @ParameterizedTest
+    @ValueSource(strings = {"https://saamp.samuel-murgia.fr", "https://second.example"})
+    void allowedOriginPreflightSucceedsWithoutAuthentication(String origin) throws Exception {
+        mvc.perform(options("/trading-api/api/accounts").contextPath("/trading-api")
+                        .header("Origin", origin)
+                        .header("Access-Control-Request-Method", "POST")
+                        .header("Access-Control-Request-Headers", "Authorization, Content-Type, Accept"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Origin", origin))
+                .andExpect(header().string("Access-Control-Allow-Methods", "GET,POST,OPTIONS"))
+                .andExpect(header().string("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept"))
+                .andExpect(header().string("Access-Control-Max-Age", "3600"))
+                .andExpect(header().doesNotExist("Access-Control-Allow-Credentials"));
+    }
+
+    @Test
+    void unapprovedOriginPreflightIsRejected() throws Exception {
+        mvc.perform(options("/trading-api/api/accounts").contextPath("/trading-api")
+                        .header("Origin", "https://unauthorized.example")
+                        .header("Access-Control-Request-Method", "POST"))
+                .andExpect(status().isForbidden())
+                .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+    }
 
     private static final long ACCOUNT_ID = 10L;
     private static final long COMPANY_ID = 42L;
