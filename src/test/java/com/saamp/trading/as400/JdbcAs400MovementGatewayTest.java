@@ -124,12 +124,12 @@ class JdbcAs400MovementGatewayTest {
     }
 
     @Test
-    void lostCommitResponseIsVerifiedInANewSerializableDb2Transaction() throws Exception {
+    void lostCommitResponseIsVerifiedInANewReadCommittedDb2Transaction() throws Exception {
         var dataSource=mock(javax.sql.DataSource.class);
         var connection=mock(java.sql.Connection.class);
         when(dataSource.getConnection()).thenReturn(connection);
         when(connection.getAutoCommit()).thenReturn(true);
-        when(connection.getTransactionIsolation()).thenReturn(java.sql.Connection.TRANSACTION_READ_COMMITTED);
+        when(connection.getTransactionIsolation()).thenReturn(java.sql.Connection.TRANSACTION_READ_UNCOMMITTED);
         doThrow(new java.sql.SQLException("commit response lost")).doNothing().when(connection).commit();
         var transactionalJdbc=mock(org.springframework.jdbc.core.JdbcTemplate.class);
         when(transactionalJdbc.getDataSource()).thenReturn(dataSource);
@@ -139,7 +139,7 @@ class JdbcAs400MovementGatewayTest {
 
         assertThat(configured.submit(movement(event(As400SyncState.PENDING)))).isZero();
 
-        verify(connection,times(2)).setTransactionIsolation(java.sql.Connection.TRANSACTION_SERIALIZABLE);
+        verify(connection,times(2)).setTransactionIsolation(java.sql.Connection.TRANSACTION_READ_COMMITTED);
         verify(connection,times(2)).setAutoCommit(false);
         verify(connection,times(2)).commit();
         verify(transactionalJdbc,times(1)).update(anyString(),any(Object[].class));

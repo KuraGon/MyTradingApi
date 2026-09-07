@@ -44,7 +44,7 @@ final class JdbcAs400MovementGateway implements As400MovementGateway {
     }
 
     private int insertIfAbsent(SicouviMovement m) {
-        // SERIALIZABLE protège aussi l'absence de ligne contre un INSERT concurrent.
+        // Le claim PostgreSQL et la correlation forte encadrent les retries avec le read-back.
         var existing=lookup(m.ste(),m.sicoui(),m.nucli(),m.ref3());
         if (existing.isPresent()) return existing.get();
         Instant now=clock.instant();

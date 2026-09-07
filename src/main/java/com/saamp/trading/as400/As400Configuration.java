@@ -44,7 +44,8 @@ public class As400Configuration {
     @ConditionalOnBean(name="as400JdbcTemplate")
     As400MovementGateway as400MovementGateway(@Qualifier("as400JdbcTemplate") JdbcTemplate jdbc) {
         var localTransaction=new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
-        localTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_SERIALIZABLE);
+        // READ_COMMITTED limite la contention sur SICOUVI1, partage avec les traitements AS400.
+        localTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         localTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         localTransaction.setTimeout(30);
         return new JdbcAs400MovementGateway(jdbc,Clock.systemUTC(),localTransaction);
