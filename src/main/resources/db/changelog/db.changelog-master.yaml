@@ -15,3 +15,5 @@ databaseChangeLog:
       file: db/changelog/007-as400-ste-width.sql
   - include:
       file: db/changelog/008-as400-outbox-claim.sql
+  - include:
+      file: db/changelog/009-as400-sicouvi.sql

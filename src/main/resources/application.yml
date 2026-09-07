@@ -28,6 +28,11 @@ springdoc:
     path: /swagger-ui.html
 
 trading:
+  as400:
+    enabled: ${TRADING_AS400_ENABLED:false}
+    sync-delay: ${TRADING_AS400_SYNC_DELAY:30s}
+    submitted-poll-delay: ${TRADING_AS400_SUBMITTED_POLL_DELAY:5m}
+    accepted-poll-delay: ${TRADING_AS400_ACCEPTED_POLL_DELAY:1h}
   cors:
     allowed-origins: ${TRADING_CORS_ALLOWED_ORIGINS:}
   security:

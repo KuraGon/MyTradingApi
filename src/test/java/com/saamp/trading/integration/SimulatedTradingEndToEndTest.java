@@ -141,7 +141,7 @@ class SimulatedTradingEndToEndTest {
         assertThat(activeReservation(acceptedBuy, Asset.EUR)).isEqualByComparingTo("1012.020000");
         submit(acceptedBuy).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("FILLED"));
         assertSettled(acceptedBuy, "CONSUMED", 2);
-        assertThat(outboxCount(acceptedBuy)).isEqualTo(2);
+        assertThat(outboxCount(acceptedBuy)).isEqualTo(1);
         assertBalance(Asset.EUR, "98990.000000");
         assertBalance(Asset.XAU, "110.000000");
         assertThat(provider.submissions()).isEqualTo(1);
@@ -197,7 +197,7 @@ class SimulatedTradingEndToEndTest {
                 .isEqualTo(ClientOrderIdFactory.fromIdempotencyKey(key("buy-accepted")));
         submit(acceptedBuy).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("FILLED"));
         assertThat(provider.submissions()).isEqualTo(3);
-        assertThat(outboxCount(acceptedBuy)).isEqualTo(2);
+        assertThat(outboxCount(acceptedBuy)).isEqualTo(1);
         assertThat(ledgerCount(acceptedBuy)).isEqualTo(2);
         assertBalance(Asset.EUR, "110751.200000");
         assertBalance(Asset.XAU, "-10.000000");
@@ -219,7 +219,7 @@ class SimulatedTradingEndToEndTest {
         resolver.resolveDue();
         assertThat(orders.findById(pendingProcessed).orElseThrow().status()).isEqualTo(OrderStatus.FILLED);
         assertThat(ledgerCount(pendingProcessed)).isEqualTo(2);
-        assertThat(outboxCount(pendingProcessed)).isEqualTo(2);
+        assertThat(outboxCount(pendingProcessed)).isEqualTo(1);
         assertThat(activeReservationCount(pendingProcessed)).isZero();
         resolver.resolveDue();
         assertThat(ledgerCount(pendingProcessed)).isEqualTo(2);

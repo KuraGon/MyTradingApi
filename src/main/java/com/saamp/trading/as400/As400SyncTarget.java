@@ -1,3 +1,3 @@
 package com.saamp.trading.as400;
-/** Cibles indépendantes de synchronisation AS400. */
-public enum As400SyncTarget { WEIGHT_ACCOUNT, ACCOUNTING }
+/** Cible SICOUVI active ; anciennes valeurs conservées pour les événements historiques. */
+public enum As400SyncTarget { WEIGHT_ACCOUNT, ACCOUNTING, SICOUVI }
