@@ -130,6 +130,46 @@ companyId
 permissions[]
 ```
 
+
+## Cohérence positions / summary
+
+Les deux consultations réutilisent la valorisation de PositionService. Les soldes sont lus ensemble
+et chaque métal non nul reçoit une seule cotation client dans le calcul : SELL/bid client pour
+une position longue, BUY/ask client pour une position courte. Le prix client inclut le spread
+configuré de la société ; aucun midpoint ni bid/ask fournisseur brut ne sert de mark au dashboard.
+
+Les quantités et prix gardent leur précision BigDecimal. Les montants publiés par métal sont :
+- valuation = arrondi HALF_UP à 2 décimales de quantityOz × clientPrice ;
+- marginRatePct = taux retourné par MarginRateRepository × 100, exprimé à 2 décimales ;
+- marginRequirement = arrondi HALF_UP à 2 décimales de abs(valuation publiée) × taux.
+
+La synthèse additionne les valuations signées publiées, leurs valeurs absolues pour grossPosition,
+et les marges publiées pour marginRequirement. Elle réutilise ensuite ces agrégats :
+netEquity = totalFunds + positionValuation ; freeEquity = netEquity − marginRequirement.
+Cette publication par ligne évite les écarts au centime entre la somme affichée et la synthèse.
+Le calcul du relevé fournisseur de référence reste inchangé.
+
+Le taux dépend du compte et du métal : un taux actif propre au compte a priorité sur le taux global.
+La configuration initiale prévoit XAU 5 %, XAG 7 %, XPT/XPD 12 % ; aucune de ces valeurs
+n'est codée en dur dans les services de consultation. Un taux absent produit MARGIN_RATE_MISSING.
+
+coveragePct conserve sa sémantique existante : 100 + (netEquity / grossPosition) × 100,
+arrondi à 2 décimales. Ce n'est pas un taux de marge. Sans position, la valeur sentinelle
+999.99 et le statut NO_POSITION sont conservés. Les seuils de risque existants restent inchangés.
+
+Exemple : 1.01 oz × 2991 EUR/oz = 3020.91 EUR ; à 5 %, marge = 151.05 EUR.
+Avec 96959.90 EUR de fonds : netEquity = 99980.81 EUR, freeEquity = 99829.76 EUR,
+coveragePct = 3409.63. Le prix kg dérivé du même prix oz vaut 96162.88 EUR/kg
+(2991 × 1000 / 31.1034768). clientPrice dans le JSON reste toujours exprimé par once.
+
+Les limites dealLimit, positionLimit et lossLimit restent celles du compte, éventuellement nulles ;
+aucune limite de démonstration n'est injectée et le contrat summary n'est pas étendu pour lossLimit.
+Seuls marginRatePct et marginRequirement sont ajoutés à positions.
+
+La logique est commune aux deux routes. Deux requêtes HTTP exécutées de part et d'autre
+d'une mise à jour effective du marché peuvent naturellement constater des prix différents ;
+aucun cache partagé ne fige artificiellement les prix entre requêtes.
+
 ## Préparation d'un ordre
 
 Exemple :

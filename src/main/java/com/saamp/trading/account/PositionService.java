@@ -1,8 +1,10 @@
 package com.saamp.trading.account;
 
 import com.saamp.trading.pricing.PricingService;
+import com.saamp.trading.risk.MarginRateRepository;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
@@ -11,30 +13,45 @@ import java.util.List;
 public class PositionService {
     private final BalanceRepository balances;
     private final PricingService pricing;
+    private final MarginRateRepository marginRates;
 
     /**
-     * Assemble la lecture des soldes et la tarification client sans déplacer cette logique dans le contrôleur.
+     * Réunit la liquidation client et la marge configurée pour partager la même base avec la synthèse.
      *
      * @param balances accès aux soldes du compte de trading
      * @param pricing tarification client avec contrôle de fraîcheur
+     * @param marginRates taux applicables au compte et au métal
      */
-    public PositionService(BalanceRepository balances, PricingService pricing) {
+    public PositionService(BalanceRepository balances, PricingService pricing, MarginRateRepository marginRates) {
         this.balances = balances;
         this.pricing = pricing;
+        this.marginRates = marginRates;
     }
 
     /**
      * Retourne les seules positions métal non nulles du compte.
      *
-     * <p>Une position longue est liquidée au prix de vente client et une position courte
-     * est rachetée au prix d'achat client. Une erreur de fraîcheur provenant du pricing
-     * est volontairement propagée.</p>
-     *
      * @param account compte de trading déjà contrôlé par société
      * @return positions valorisées, sans données internes de spread
      */
     public List<AccountPosition> read(TradingAccount account) {
-        return balances.findAll(account.id()).stream()
+        return value(account, balances.findAll(account.id()));
+    }
+
+    /**
+     * Valorise un instantané de soldes sans le relire pendant le calcul de synthèse.
+     *
+     * <p>Une seule cotation client par métal sert à sa liquidation et à sa marge.
+     * La valeur publiée est réutilisée avant le calcul de marge, puis les montants
+     * publiés sont additionnés par la synthèse pour conserver une égalité au centime.</p>
+     *
+     * @param account compte de trading déjà contrôlé par société
+     * @param balanceSnapshot soldes de ce compte lus ensemble
+     * @return positions et marges publiées à deux décimales HALF_UP
+     * @throws com.saamp.trading.common.TradingException si un prix ou un taux requis est indisponible
+     */
+    public List<AccountPosition> value(TradingAccount account, List<Balance> balanceSnapshot) {
+        return balanceSnapshot.stream()
                 .filter(balance -> balance.asset().isMetal() && balance.quantity().signum() != 0)
                 .map(balance -> {
                     var quote = pricing.quoteForDisplay(account.companyId(), balance.asset(), account.baseCurrency());
@@ -42,8 +59,11 @@ public class PositionService {
                             ? quote.clientSellPrice()
                             : quote.clientBuyPrice();
                     var valuation = balance.quantity().multiply(clientPrice).setScale(2, RoundingMode.HALF_UP);
+                    var marginRate = marginRates.currentRate(account.id(), balance.asset());
+                    var marginRequirement = valuation.abs().multiply(marginRate).setScale(2, RoundingMode.HALF_UP);
+                    var marginRatePct = marginRate.multiply(new BigDecimal("100")).setScale(2, RoundingMode.HALF_UP);
                     return new AccountPosition(balance.asset(), balance.quantity(), clientPrice, valuation,
-                            quote.priceAsOf().toInstant());
+                            quote.priceAsOf().toInstant(), marginRatePct, marginRequirement);
                 })
                 .toList();
     }

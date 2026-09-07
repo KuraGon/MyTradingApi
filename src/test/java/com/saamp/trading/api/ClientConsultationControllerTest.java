@@ -175,11 +175,13 @@ class ClientConsultationControllerTest {
     void positionsExposeNoInternalPricingField() throws Exception {
         when(positions.read(account)).thenReturn(List.of(new AccountPosition(Asset.XAU,
                 new BigDecimal("2.000000"), new BigDecimal("2000.00"), new BigDecimal("4000.00"),
-                Instant.parse("2026-09-03T10:00:00Z"))));
+                Instant.parse("2026-09-03T10:00:00Z"), new BigDecimal("5.00"), new BigDecimal("200.00"))));
 
         mvc.perform(get("/api/v1/accounts/me/positions").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].clientPrice").value(2000.00))
+                .andExpect(jsonPath("$[0].marginRatePct").value(5.00))
+                .andExpect(jsonPath("$[0].marginRequirement").value(200.00))
                 .andExpect(content().string(not(containsString("market_price"))))
                 .andExpect(content().string(not(containsString("marketPrice"))))
                 .andExpect(content().string(not(containsString("spread_applied"))))
@@ -460,5 +462,61 @@ class ClientConsultationControllerTest {
     private org.springframework.test.web.servlet.request.RequestPostProcessor jwtWith(String permission) {
         return jwt().authorities(new SimpleGrantedAuthority("MYTRADING_ACCESS"),
                 new SimpleGrantedAuthority(permission));
+    }
+
+    @Test
+    void positionsAndSummaryExposeTheSameLiquidationAndConfiguredMargin() throws Exception {
+        var marginRates=mock(com.saamp.trading.risk.MarginRateRepository.class);
+        var snapshots=mock(com.saamp.trading.risk.RiskSnapshotRepository.class);
+        var positionService=new PositionService(balances,pricing,marginRates);
+        var riskService=new RiskService(balances,positionService,snapshots);
+        when(balances.findAll(ACCOUNT_ID)).thenReturn(List.of(
+                new Balance(ACCOUNT_ID,Asset.EUR,new BigDecimal("96959.90"),NOW),
+                new Balance(ACCOUNT_ID,Asset.XAU,new BigDecimal("1.01"),NOW)));
+        when(pricing.quoteForDisplay(COMPANY_ID,Asset.XAU,Asset.EUR)).thenReturn(new ClientQuote(
+                Asset.XAU,"XAUEUR",new BigDecimal("3000"),new BigDecimal("3010"),
+                new BigDecimal("3019.03"),new BigDecimal("2991"),
+                new BigDecimal("3019.03"),new BigDecimal("2991"),
+                new BigDecimal("0.003"),new BigDecimal("0.003"),1,NOW));
+        when(marginRates.currentRate(ACCOUNT_ID,Asset.XAU)).thenReturn(new BigDecimal("0.05"));
+        when(positions.read(account)).thenAnswer(call->positionService.read(account));
+        when(risk.computeAndStore(account)).thenAnswer(call->riskService.computeAndStore(account));
+
+        var positionResponse=mvc.perform(get("/api/v1/accounts/me/positions").with(jwtWith(ACCOUNT_READ)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].valuation").value(3020.91))
+                .andExpect(jsonPath("$[0].marginRatePct").value(5.00))
+                .andExpect(jsonPath("$[0].marginRequirement").value(151.05))
+                .andExpect(jsonPath("$[0].coveragePct").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        var summaryResponse=mvc.perform(get("/api/v1/accounts/me/summary").with(jwtWith(ACCOUNT_READ)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.risk.netEquity").value(99980.81))
+                .andExpect(jsonPath("$.risk.freeEquity").value(99829.76))
+                .andExpect(jsonPath("$.risk.coveragePct").value(3409.63))
+                .andReturn().getResponse().getContentAsString();
+        var line=objectMapper.readTree(positionResponse).get(0);
+        var summary=objectMapper.readTree(summaryResponse).get("risk");
+        assertThat(summary.get("positionValuation").decimalValue()).isEqualByComparingTo(line.get("valuation").decimalValue());
+        assertThat(summary.get("grossPosition").decimalValue()).isEqualByComparingTo(line.get("valuation").decimalValue().abs());
+        assertThat(summary.get("marginRequirement").decimalValue()).isEqualByComparingTo(line.get("marginRequirement").decimalValue());
+        assertThat(line.propertyStream().map(java.util.Map.Entry::getKey).toList()).containsExactlyInAnyOrder(
+                "asset","quantityOz","clientPrice","valuation","priceAsOf","marginRatePct","marginRequirement");
+    }
+
+    @Test
+    void summaryKeepsUnconfiguredLimitsNull() throws Exception {
+        account=new TradingAccount(ACCOUNT_ID,COMPANY_ID,Asset.EUR,AccountStatus.ACTIVE,
+                null,null,null,1,NOW,NOW);
+        when(accounts.requireByCompany(COMPANY_ID)).thenReturn(account);
+        when(risk.computeAndStore(account)).thenReturn(new RiskResult(new BigDecimal("100.00"),
+                BigDecimal.ZERO,new BigDecimal("100.00"),BigDecimal.ZERO,new BigDecimal("100.00"),
+                BigDecimal.ZERO,new BigDecimal("999.99"),RiskStatus.NO_POSITION));
+        var response=mvc.perform(get("/api/v1/accounts/me/summary").with(jwtWith(ACCOUNT_READ)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        var summary=objectMapper.readTree(response);
+        assertThat(summary.get("dealLimit").isNull()).isTrue();
+        assertThat(summary.get("positionLimit").isNull()).isTrue();
+        assertThat(account.lossLimit()).isNull();
     }
 }

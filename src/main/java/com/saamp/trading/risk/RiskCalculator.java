@@ -1,17 +1,16 @@
 package com.saamp.trading.risk;
 
 import com.saamp.trading.domain.RiskStatus;
+import com.saamp.trading.account.AccountPosition;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Collection;
 
 /**
- * StoneX-compatible risk formulas validated in the MyTrading specification.
- *
- * <p>The calculator deliberately receives {@code totalFunds} separately from positions.
- * This allows the exact StoneX statement fixture to be reproduced while client accounts
- * can treat the base-currency balance as funds and pass metal positions only.</p>
+ * Calcule les indicateurs communs aux relevés de référence et aux positions client publiées.
+ * La couverture conserve sa formule validée : 100 + netEquity / grossPosition * 100.
+ * Elle ne représente jamais un taux de marge par métal.
  */
 public final class RiskCalculator {
 
@@ -22,6 +21,13 @@ public final class RiskCalculator {
     private RiskCalculator() {
     }
 
+    /**
+     * Préserve le calcul des agrégats bruts du relevé fournisseur de référence.
+     * @param totalFunds fonds exprimés dans la devise du relevé
+     * @param positions positions signées du relevé
+     * @return indicateurs arrondis à leur précision de publication
+     * @throws IllegalArgumentException si les fonds ou les positions sont absents
+     */
     public static RiskResult calculate(BigDecimal totalFunds, Collection<RiskPosition> positions) {
         if (totalFunds == null || positions == null) {
             throw new IllegalArgumentException("totalFunds and positions are required");
@@ -39,6 +45,33 @@ public final class RiskCalculator {
             marginRequirement = marginRequirement.add(absoluteValuation.multiply(position.marginRate()));
         }
 
+        return summarize(totalFunds, positionValuation, marginRequirement, grossPosition);
+    }
+
+    /**
+     * Additionne les lignes déjà publiées pour que le dashboard reste cohérent au centime.
+     * @param totalFunds solde devise du compte, hors positions métal
+     * @param positions liquidations client et marges calculées une seule fois par métal
+     * @return synthèse dont les totaux correspondent exactement aux lignes affichées
+     * @throws IllegalArgumentException si les fonds ou les positions sont absents
+     */
+    public static RiskResult calculateAccountPositions(BigDecimal totalFunds, Collection<AccountPosition> positions) {
+        if (totalFunds == null || positions == null) {
+            throw new IllegalArgumentException("totalFunds and positions are required");
+        }
+        BigDecimal valuation = BigDecimal.ZERO;
+        BigDecimal margin = BigDecimal.ZERO;
+        BigDecimal gross = BigDecimal.ZERO;
+        for (AccountPosition position : positions) {
+            valuation = valuation.add(position.valuation());
+            gross = gross.add(position.valuation().abs());
+            margin = margin.add(position.marginRequirement());
+        }
+        return summarize(totalFunds, valuation, margin, gross);
+    }
+
+    private static RiskResult summarize(BigDecimal totalFunds, BigDecimal positionValuation,
+                                        BigDecimal marginRequirement, BigDecimal grossPosition) {
         // StoneX publishes and reuses monetary aggregates at 2 decimals.
         // Round each published aggregate before feeding the next calculation so the
         // downstream values reproduce the provider statement to the cent.
@@ -55,6 +88,8 @@ public final class RiskCalculator {
             coveragePct = new BigDecimal("999.99");
             status = RiskStatus.NO_POSITION;
         } else {
+            // Indicateur existant : 100 + netEquity / grossPosition * 100.
+            // Ce pourcentage de couverture ne représente pas le taux de marge par métal.
             coveragePct = ONE_HUNDRED.add(
                     netEquity.divide(publishedGrossPosition, 12, RoundingMode.HALF_UP).multiply(ONE_HUNDRED));
             if (coveragePct.compareTo(CRITICAL) <= 0) {

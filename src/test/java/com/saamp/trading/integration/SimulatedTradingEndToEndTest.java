@@ -252,6 +252,42 @@ class SimulatedTradingEndToEndTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.lines", hasSize(10)));
     }
 
+
+    @Test
+    void dashboardPositionsAndSummaryShareClientLiquidationAndMargin() throws Exception {
+        ledger.post(accountId,Asset.EUR,new BigDecimal("-3040.10"),LedgerEntryType.ADJUSTMENT,
+                null,null,"test:dashboard-fixture");
+        ledger.post(accountId,Asset.XAU,new BigDecimal("-98.99"),LedgerEntryType.ADJUSTMENT,
+                null,null,"test:dashboard-fixture");
+        setMarketPrice("3000.000000","3010.000000");
+        jdbc.update("UPDATE trading_spread SET spread_buy=0.003000,spread_sell=0.003000 WHERE company_id=?",companyId);
+        jdbc.update("INSERT INTO trading_margin_rate(account_id,asset,rate) VALUES (?,'XAU',0.0500)",accountId);
+
+        var line=json.readTree(getWithPermissions("/api/v1/accounts/me/positions",ACCOUNT_READ)
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).get(0);
+        var summary=json.readTree(getWithPermissions("/api/v1/accounts/me/summary",ACCOUNT_READ)
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        var risk=summary.get("risk");
+        assertThat(line.get("quantityOz").decimalValue()).isEqualByComparingTo("1.01");
+        assertThat(line.get("clientPrice").decimalValue()).isEqualByComparingTo("2991");
+        assertThat(line.get("valuation").decimalValue()).isEqualByComparingTo("3020.91");
+        assertThat(line.get("marginRatePct").decimalValue()).isEqualByComparingTo("5.00");
+        assertThat(line.get("marginRequirement").decimalValue()).isEqualByComparingTo("151.05");
+        assertThat(risk.get("positionValuation").decimalValue()).isEqualByComparingTo(line.get("valuation").decimalValue());
+        assertThat(risk.get("grossPosition").decimalValue()).isEqualByComparingTo("3020.91");
+        assertThat(risk.get("marginRequirement").decimalValue()).isEqualByComparingTo(line.get("marginRequirement").decimalValue());
+        assertThat(risk.get("totalFunds").decimalValue()).isEqualByComparingTo("96959.90");
+        assertThat(risk.get("netEquity").decimalValue()).isEqualByComparingTo("99980.81");
+        assertThat(risk.get("freeEquity").decimalValue()).isEqualByComparingTo("99829.76");
+        assertThat(risk.get("coveragePct").decimalValue()).isEqualByComparingTo("3409.63");
+        assertThat(summary.get("dealLimit").isNull()).isTrue();
+        assertThat(summary.get("positionLimit").isNull()).isTrue();
+        assertThat(jdbc.queryForObject("""
+                SELECT margin_requirement FROM trading_risk_snapshot
+                WHERE account_id=? ORDER BY computed_at DESC,id DESC LIMIT 1
+                """,BigDecimal.class,accountId)).isEqualByComparingTo("151.05");
+    }
+
     private long preview(String side, String quantity, String suffix) throws Exception {
         return previewResponse(side, quantity, suffix).get("orderId").asLong();
     }

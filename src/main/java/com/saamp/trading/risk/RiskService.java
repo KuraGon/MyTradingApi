@@ -1,48 +1,51 @@
 package com.saamp.trading.risk;
 
+import com.saamp.trading.account.AccountPosition;
 import com.saamp.trading.account.BalanceRepository;
+import com.saamp.trading.account.PositionService;
 import com.saamp.trading.account.TradingAccount;
-import com.saamp.trading.common.TradingException;
-import com.saamp.trading.common.TradingPair;
-import com.saamp.trading.domain.Asset;
-import com.saamp.trading.pricing.MarketPrice;
-import com.saamp.trading.pricing.MarketPriceService;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.time.OffsetDateTime;
-import java.util.ArrayList;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Comparator;
 
-/** Computes client-account risk from local balances and fresh market prices. */
+/** Calcule le risque du compte sur les mêmes liquidations client que la consultation des positions. */
 @Service
 public class RiskService {
     private final BalanceRepository balances;
-    private final MarginRateRepository marginRates;
-    private final MarketPriceService prices;
+    private final PositionService positions;
     private final RiskSnapshotRepository snapshots;
 
-    public RiskService(BalanceRepository balances, MarginRateRepository marginRates,
-                       MarketPriceService prices, RiskSnapshotRepository snapshots) {
-        this.balances = balances; this.marginRates = marginRates; this.prices = prices; this.snapshots = snapshots;
+    /**
+     * Réutilise la valorisation client sans accéder à une seconde base de prix fournisseur.
+     * @param balances lecture cohérente des fonds et quantités métal
+     * @param positions liquidation et marge client par métal
+     * @param snapshots historique local des indicateurs calculés
+     */
+    public RiskService(BalanceRepository balances, PositionService positions, RiskSnapshotRepository snapshots) {
+        this.balances = balances;
+        this.positions = positions;
+        this.snapshots = snapshots;
     }
 
+    /**
+     * Publie une synthèse construite à partir des montants des lignes de positions.
+     * @param account compte de trading déjà contrôlé par société
+     * @return indicateurs utilisant une seule lecture des soldes et des cotations par métal
+     * @throws com.saamp.trading.common.TradingException si la liquidation ou la marge ne peut être calculée
+     */
     public RiskResult computeAndStore(TradingAccount account) {
-        BigDecimal totalFunds = balances.find(account.id(), account.baseCurrency()).map(b -> b.quantity()).orElse(BigDecimal.ZERO);
-        var positions = new ArrayList<RiskPosition>();
-        OffsetDateTime oldestPrice = OffsetDateTime.now();
-        for (Asset metal : Asset.metals()) {
-            BigDecimal qty = balances.find(account.id(), metal).map(b -> b.quantity()).orElse(BigDecimal.ZERO);
-            if (qty.signum() == 0) continue;
-            String pair = TradingPair.metalAgainst(metal, account.baseCurrency());
-            MarketPrice market = prices.requireFreshForDisplay(pair);
-            // Conservative mark: long positions valued on bid, short positions on ask.
-            BigDecimal mark = qty.signum() >= 0 ? market.bid() : market.ask();
-            positions.add(new RiskPosition(qty, mark, marginRates.currentRate(account.id(), metal)));
-            if (market.priceAsOf().isBefore(oldestPrice)) oldestPrice = market.priceAsOf();
-        }
-        RiskResult result = RiskCalculator.calculate(totalFunds, positions);
-        snapshots.insert(account.id(), oldestPrice, result);
+        var balanceSnapshot = balances.findAll(account.id());
+        BigDecimal totalFunds = balanceSnapshot.stream()
+                .filter(balance -> balance.asset() == account.baseCurrency())
+                .map(balance -> balance.quantity()).reduce(BigDecimal.ZERO, BigDecimal::add);
+        var valuedPositions = positions.value(account, balanceSnapshot);
+        Instant oldestPrice = valuedPositions.stream().map(AccountPosition::priceAsOf)
+                .min(Comparator.naturalOrder()).orElseGet(Instant::now);
+        RiskResult result = RiskCalculator.calculateAccountPositions(totalFunds, valuedPositions);
+        snapshots.insert(account.id(), oldestPrice.atOffset(ZoneOffset.UTC), result);
         return result;
     }
 }
