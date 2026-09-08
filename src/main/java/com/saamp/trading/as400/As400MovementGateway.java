@@ -1,22 +1,22 @@
 package com.saamp.trading.as400;
 
-import java.util.Optional;
+import java.util.List;
 
-/** Isole le protocole SICOUVI du stockage PostgreSQL et permet les tests sans AS400. */
+/** Isole la transaction DB2 du groupe et son read-back sans dependance au ledger. */
 interface As400MovementGateway {
-    /** Confirme une insertion ou retrouve le même mouvement après une réponse perdue.
-     * @param movement mouvement client
-     * @return SIPROV courant, zéro tant que non attribué
+    /** Confirme le groupe complet ; ne repare jamais un groupe partiel.
+     * @param group identites et donnees deja commitees dans PostgreSQL
+     * @return SIPROV dans l'ordre des jambes
      */
-    int submit(SicouviMovement movement);
-    /** Relit la corrélation complète sans jamais recréer un mouvement soumis.
-     * @param event identité persistée
-     * @return provisoire courant, vide si la ligne manque
+    List<Integer> submit(As400MovementGroup group);
+    /** Relit toutes les jambes sans autoriser de nouvel INSERT.
+     * @param group groupe durable
+     * @return SIPROV dans l'ordre des jambes
      */
-    Optional<Integer> provisional(As400SyncEvent event);
+    List<Integer> provisional(As400MovementGroup group);
     /** Attend exclusivement ETPRO1, jamais ETPRO2.
-     * @param event identité et provisoire persistés
-     * @return vrai si le traitement définitif est confirmé
+     * @param leg identite et provisoire persistants
+     * @return vrai si le traitement definitif est confirme
      */
-    boolean settled(As400SyncEvent event);
+    boolean settled(As400Movement leg);
 }

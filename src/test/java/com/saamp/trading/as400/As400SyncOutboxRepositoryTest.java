@@ -23,13 +23,13 @@ class As400SyncOutboxRepositoryTest {
     void confirmedProgressReleasesClaimWithTechnicalStatus(As400SyncState state,String status) {
         var event=event(As400SyncState.PENDING);
         Integer siprov=state==As400SyncState.SUBMITTED?null:904736;
-        outbox.advance(event,state,siprov,Duration.ofMinutes(5));
+        outbox.advance(event,state,Duration.ofMinutes(5));
 
         var sql=ArgumentCaptor.forClass(String.class);
         var args=ArgumentCaptor.forClass(Object[].class);
         verify(jdbc).update(sql.capture(),args.capture());
-        assertThat(args.getValue()).containsExactly(status,state.name(),siprov,state.name(),state.name(),
-                state.name(),300L,event.id(),event.claimToken());
+        assertThat(args.getValue()).containsExactly(status,state.name(),state.name(),state.name(),
+                state.name(),300L,event.id(),event.claimToken(),state.ordinal());
         assertThat(sql.getValue()).contains("status=?,sync_state=?",
                 "synced_at=CASE WHEN ?='SETTLED'", "claim_token=NULL",
                 "WHERE id=? AND status='PROCESSING' AND claim_token=?");

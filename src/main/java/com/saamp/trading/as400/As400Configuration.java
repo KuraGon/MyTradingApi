@@ -11,7 +11,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Clock;
-import java.util.Optional;
+import java.util.List;
 
 /** Active DB2 uniquement sur configuration explicite ; PostgreSQL demeure la datasource principale. */
 @Configuration
@@ -55,9 +55,9 @@ public class As400Configuration {
     @ConditionalOnMissingBean(As400MovementGateway.class)
     As400MovementGateway unconfiguredMovementGateway() {
         return new As400MovementGateway() {
-            @Override public int submit(SicouviMovement movement) { throw unavailable(); }
-            @Override public Optional<Integer> provisional(As400SyncEvent event) { throw unavailable(); }
-            @Override public boolean settled(As400SyncEvent event) { throw unavailable(); }
+            @Override public List<Integer> submit(As400MovementGroup group) { throw unavailable(); }
+            @Override public List<Integer> provisional(As400MovementGroup group) { throw unavailable(); }
+            @Override public boolean settled(As400Movement leg) { throw unavailable(); }
             private IllegalStateException unavailable() { return new IllegalStateException("AS400_NOT_CONFIGURED"); }
         };
     }

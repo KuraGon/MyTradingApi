@@ -17,3 +17,5 @@ databaseChangeLog:
       file: db/changelog/008-as400-outbox-claim.sql
   - include:
       file: db/changelog/009-as400-sicouvi.sql
+  - include:
+      file: db/changelog/010-as400-movement-group.sql

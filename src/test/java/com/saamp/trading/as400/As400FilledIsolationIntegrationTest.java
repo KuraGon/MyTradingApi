@@ -31,7 +31,7 @@ class As400FilledIsolationIntegrationTest {
         var tx=new TransactionTemplate(transactionManager);
         long accountId=jdbc.queryForObject("""
                 INSERT INTO trading_account(company_id,base_currency,status,as400_ste,as400_nucli_trading)
-                VALUES (?,'EUR','ACTIVE','I',123456) RETURNING id
+                VALUES (?,'EUR','ACTIVE','B',123456) RETURNING id
                 """,Long.class,System.currentTimeMillis());
         ledger.post(accountId,Asset.EUR,new BigDecimal("1000"),LedgerEntryType.ADJUSTMENT,null,null,"test:as400");
         long orderId=tx.execute(status->{
@@ -42,26 +42,31 @@ class As400FilledIsolationIntegrationTest {
                     FROM trading_account WHERE id=? RETURNING id
                     """,Long.class,UUID.randomUUID().toString(),UUID.randomUUID().toString(),accountId);
             ledger.postTrade(accountId,Asset.XAU,BigDecimal.ONE,Asset.EUR,new BigDecimal("-100.00"),id,"test:as400");
-            jdbc.update("UPDATE trading_order SET status='FILLED',client_price=100,market_price=99,executed_at=NOW() WHERE id=?",id);
+            jdbc.update("UPDATE trading_order SET status='FILLED',client_price=100,market_price=99,stonex_exid='EXID-FILLED-TEST',executed_at=NOW() WHERE id=?",id);
             return id;
         });
         var before=jdbc.queryForList("SELECT asset,quantity FROM trading_balance WHERE account_id=? ORDER BY asset",accountId);
         UUID token=UUID.randomUUID();
         var claimed=jdbc.query("""
                 UPDATE trading_as400_sync_outbox SET status='PROCESSING',claim_token=?,next_attempt_at=NOW()+INTERVAL '5 minutes'
-                WHERE order_id=? RETURNING id,sicoui
+                WHERE order_id=? RETURNING id
                 """,(rs,n)->new As400SyncEvent(rs.getLong(1),orderId,As400SyncTarget.SICOUVI,0,token,
-                        As400SyncState.PENDING,rs.getInt(2),null,"I",123456),token,orderId).getFirst();
+                        As400SyncState.PENDING,"B",123456),token,orderId).getFirst();
         // Le batch est borné à notre fixture ; les mutations utilisent le vrai repository transactionnel.
-        var isolated=mock(As400SyncOutboxRepository.class);
-        when(isolated.claimDue(anyInt(),any())).thenReturn(List.of(claimed));
-        doAnswer(call->{outbox.withClaim(call.getArgument(0),call.getArgument(1));return null;})
-                .when(isolated).withClaim(any(),any());
-        doAnswer(call->{outbox.markFailed(call.getArgument(0),call.getArgument(1),call.getArgument(2));return null;})
-                .when(isolated).markFailed(any(),anyString(),anyBoolean());
+        var isolated=mock(As400SyncOutboxRepository.class,org.mockito.AdditionalAnswers.delegatesTo(outbox));
+        doReturn(List.of(claimed)).when(isolated).claimDue(anyInt(),any());
         var unavailable=mock(As400MovementGateway.class);
-        when(unavailable.submit(any())).thenThrow(new DataAccessResourceFailureException("AS400 unavailable"));
-        new As400SyncWorker(isolated,jdbc,unavailable,true,Duration.ofMinutes(5),Duration.ofHours(1)).processDue();
+        var independent=new TransactionTemplate(transactionManager);
+        independent.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        when(unavailable.submit(any())).thenAnswer(call -> {
+            // Une autre transaction voit deja les quatre identites et le FX avant le premier acces DB2.
+            independent.executeWithoutResult(status -> {
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_movement WHERE event_id=?",Integer.class,claimed.id())).isEqualTo(4);
+                assertThat(jdbc.queryForObject("SELECT fx_rate=1 AND fx_frozen_at IS NOT NULL FROM trading_as400_sync_outbox WHERE id=?",Boolean.class,claimed.id())).isTrue();
+            });
+            throw new DataAccessResourceFailureException("AS400 unavailable");
+        });
+        new As400SyncWorker(isolated,jdbc,unavailable,As400SyncFixtures.MAPPING,mock(As400FxSource.class),true,Duration.ofMinutes(5),Duration.ofHours(1)).processDue();
 
         assertThat(jdbc.queryForObject("SELECT status FROM trading_order WHERE id=?",String.class,orderId)).isEqualTo("FILLED");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_ledger_entry WHERE order_id=? AND entry_type='TRADE'",Integer.class,orderId)).isEqualTo(2);

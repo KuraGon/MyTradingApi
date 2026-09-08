@@ -176,13 +176,13 @@ class TradingDatabaseInvariantTest {
     }
 
     @Test
-    void liquibaseAppliedChangelogs001To009AndCriticalTriggersAreActive() {
+    void liquibaseAppliedChangelogs001To010AndCriticalTriggersAreActive() {
         Integer changelogCount = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM databasechangelog
                 WHERE id IN ('001-trading-core','002-trading-pricing','003-trading-defaults','004-trading-reconciliation',
-                  '005-pmxconnect-corrections','006-as400-synchronization','007-as400-ste-width','008-as400-outbox-claim','009-as400-sicouvi')
+                  '005-pmxconnect-corrections','006-as400-synchronization','007-as400-ste-width','008-as400-outbox-claim','009-as400-sicouvi','010-as400-movement-group')
                 """, Integer.class);
-        assertThat(changelogCount).isEqualTo(9);
+        assertThat(changelogCount).isEqualTo(10);
 
         List<String> triggers = jdbc.queryForList("""
                 SELECT tgname FROM pg_trigger
@@ -212,25 +212,28 @@ class TradingDatabaseInvariantTest {
             as400Outbox.enqueueFilled(orderId);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_sync_outbox WHERE order_id=?",Integer.class,orderId)).isEqualTo(1);
             var first=as400Outbox.claimDue(1,Duration.ofMinutes(5)).getFirst();
-            assertThat(first.sicoui()).isBetween(1,999999);
+            prepareAs400Group(first.id());
+            var identities=jdbc.queryForList("SELECT sicoui FROM trading_as400_movement WHERE event_id=? ORDER BY leg_index",Integer.class,first.id());
+            assertThat(identities).hasSize(4).doesNotHaveDuplicates().allSatisfy(id->assertThat(id).isBetween(1,999999));
             assertThat(first.ste()).isEqualTo("i");
             assertThat(first.nucliTrading()).isEqualTo(456);
             as400Outbox.markFailed(first,"AS400_TEMPORARY_TEST",false);
             jdbc.update("UPDATE trading_account SET as400_nucli_trading=789 WHERE id=?",accountId);
             jdbc.update("UPDATE trading_as400_sync_outbox SET next_attempt_at=NOW()-INTERVAL '1 second' WHERE id=?",first.id());
             var retry=as400Outbox.claimDue(1,Duration.ofMinutes(5)).getFirst();
-            assertThat(retry.sicoui()).isEqualTo(first.sicoui());
+            assertThat(jdbc.queryForList("SELECT sicoui FROM trading_as400_movement WHERE event_id=? ORDER BY leg_index",Integer.class,retry.id())).isEqualTo(identities);
             assertThat(retry.nucliTrading()).isEqualTo(456);
             assertThat(retry.attemptCount()).isEqualTo(1);
             jdbc.update("UPDATE trading_as400_sync_outbox SET next_attempt_at=NOW()-INTERVAL '1 second' WHERE id=?",first.id());
             var reclaimed=as400Outbox.claimDue(1,Duration.ofMinutes(5)).getFirst();
             assertThat(reclaimed.claimToken()).isNotEqualTo(retry.claimToken());
-            assertThat(reclaimed.sicoui()).isEqualTo(first.sicoui());
-            as400Outbox.advance(retry,com.saamp.trading.as400.As400SyncState.SETTLED,904736,Duration.ofHours(1));
+            assertThat(jdbc.queryForList("SELECT sicoui FROM trading_as400_movement WHERE event_id=? ORDER BY leg_index",Integer.class,reclaimed.id())).isEqualTo(identities);
+            as400Outbox.advance(retry,com.saamp.trading.as400.As400SyncState.SETTLED,Duration.ofHours(1));
             as400Outbox.markFailed(retry,"stale",true);
             as400Outbox.withClaim(retry,ignored -> { throw new AssertionError("stale claim executed"); });
             assertThat(jdbc.queryForObject("SELECT status FROM trading_as400_sync_outbox WHERE id=?",String.class,first.id())).isEqualTo("PROCESSING");
-            as400Outbox.advance(reclaimed,com.saamp.trading.as400.As400SyncState.SUBMITTED,null,Duration.ofMinutes(5));
+            progressAs400Group(reclaimed.id(),"SUBMITTED");
+            as400Outbox.advance(reclaimed,com.saamp.trading.as400.As400SyncState.SUBMITTED,Duration.ofMinutes(5));
             assertThat(jdbc.queryForObject("SELECT submitted_at IS NOT NULL FROM trading_as400_sync_outbox WHERE id=?",Boolean.class,first.id())).isTrue();
             transaction.setRollbackOnly();
         });
@@ -245,26 +248,30 @@ class TradingDatabaseInvariantTest {
             jdbc.update("UPDATE trading_as400_sync_outbox SET next_attempt_at=NOW()+INTERVAL '1 hour'");
             as400Outbox.enqueueFilled(orderId);
             var event=as400Outbox.claimDue(1,Duration.ofMinutes(5)).getFirst();
-            as400Outbox.advance(event,com.saamp.trading.as400.As400SyncState.SUBMITTED,null,Duration.ofMinutes(5));
+            prepareAs400Group(event.id());
+            progressAs400Group(event.id(),"SUBMITTED");
+            as400Outbox.advance(event,com.saamp.trading.as400.As400SyncState.SUBMITTED,Duration.ofMinutes(5));
             assertThat(jdbc.queryForObject("SELECT status FROM trading_as400_sync_outbox WHERE id=?",String.class,event.id())).isEqualTo("PENDING");
             jdbc.update("UPDATE trading_as400_sync_outbox SET next_attempt_at=NOW()-INTERVAL '1 second' WHERE id=?",event.id());
             var restarted=new As400SyncOutboxRepository(jdbc);
             var submitted=restarted.claimDue(1,Duration.ofMinutes(5)).getFirst();
             assertThat(submitted.state()).isEqualTo(com.saamp.trading.as400.As400SyncState.SUBMITTED);
             assertThat(jdbc.queryForObject("SELECT status FROM trading_as400_sync_outbox WHERE id=?",String.class,event.id())).isEqualTo("PROCESSING");
-            restarted.advance(submitted,com.saamp.trading.as400.As400SyncState.ACCEPTED,904736,Duration.ofHours(1));
+            progressAs400Group(submitted.id(),"ACCEPTED");
+            restarted.advance(submitted,com.saamp.trading.as400.As400SyncState.ACCEPTED,Duration.ofHours(1));
             assertThat(jdbc.queryForObject("SELECT status FROM trading_as400_sync_outbox WHERE id=?",String.class,event.id())).isEqualTo("PENDING");
             jdbc.update("UPDATE trading_as400_sync_outbox SET next_attempt_at=NOW()-INTERVAL '1 second' WHERE id=?",event.id());
             var accepted=restarted.claimDue(1,Duration.ofMinutes(5)).getFirst();
             assertThat(accepted.state()).isEqualTo(com.saamp.trading.as400.As400SyncState.ACCEPTED);
-            assertThat(accepted.siprov()).isEqualTo(904736);
+            assertThat(jdbc.queryForList("SELECT siprov FROM trading_as400_movement WHERE event_id=? ORDER BY leg_index",Integer.class,accepted.id())).containsExactly(904736,904737,904738,904739);
             restarted.markFailed(accepted,"AS400_TEMPORARY_TEST",false);
             assertThat(jdbc.queryForObject("SELECT status FROM trading_as400_sync_outbox WHERE id=?",String.class,event.id())).isEqualTo("RETRY");
             assertThat(jdbc.queryForObject("SELECT sync_state FROM trading_as400_sync_outbox WHERE id=?",String.class,event.id())).isEqualTo("ACCEPTED");
-            assertThat(jdbc.queryForObject("SELECT accepted_at IS NOT NULL AND submitted_at IS NOT NULL AND siprov=904736 FROM trading_as400_sync_outbox WHERE id=?",Boolean.class,event.id())).isTrue();
+            assertThat(jdbc.queryForObject("SELECT accepted_at IS NOT NULL AND submitted_at IS NOT NULL AND siprov IS NULL FROM trading_as400_sync_outbox WHERE id=?",Boolean.class,event.id())).isTrue();
             jdbc.update("UPDATE trading_as400_sync_outbox SET next_attempt_at=NOW()-INTERVAL '1 second' WHERE id=?",event.id());
             var finalClaim=restarted.claimDue(1,Duration.ofMinutes(5)).getFirst();
-            restarted.advance(finalClaim,com.saamp.trading.as400.As400SyncState.SETTLED,904736,Duration.ofHours(1));
+            progressAs400Group(finalClaim.id(),"SETTLED");
+            restarted.advance(finalClaim,com.saamp.trading.as400.As400SyncState.SETTLED,Duration.ofHours(1));
             assertThat(jdbc.queryForObject("SELECT status='SYNCED' AND synced_at IS NOT NULL AND settled_at IS NOT NULL AND last_error IS NULL AND claim_token IS NULL FROM trading_as400_sync_outbox WHERE id=?",Boolean.class,event.id())).isTrue();
             assertThat(restarted.claimDue(1,Duration.ofMinutes(5))).isEmpty();
             transaction.setRollbackOnly();
@@ -308,13 +315,86 @@ class TradingDatabaseInvariantTest {
             long accountId=createAccount(companyId);
             long first=createDraftOrder(accountId,companyId,"cycle-1-"+companyId);
             long second=createDraftOrder(accountId,companyId,"cycle-2-"+companyId);
-            jdbc.update("INSERT INTO trading_as400_sync_outbox(order_id,target,sicoui) VALUES (?,'SICOUVI',1),(?,'SICOUVI',1)",first,second);
-            assertThatThrownBy(()->jdbc.update("INSERT INTO trading_as400_sync_outbox(order_id,target,sicoui) VALUES (?,'SICOUVI',1000000)",first))
+            as400Outbox.enqueueFilled(first);
+            as400Outbox.enqueueFilled(second);
+            long firstEvent=jdbc.queryForObject("SELECT id FROM trading_as400_sync_outbox WHERE order_id=?",Long.class,first);
+            long secondEvent=jdbc.queryForObject("SELECT id FROM trading_as400_sync_outbox WHERE order_id=?",Long.class,second);
+            prepareAs400Group(firstEvent);
+            prepareAs400Group(secondEvent);
+            int reused=jdbc.queryForObject("SELECT sicoui FROM trading_as400_movement WHERE event_id=? AND leg_index=0",Integer.class,firstEvent);
+            jdbc.update("UPDATE trading_as400_movement SET sicoui=? WHERE event_id=? AND leg_index=0",reused,secondEvent);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_movement WHERE sicoui=?",Integer.class,reused)).isGreaterThanOrEqualTo(2);
+            assertThatThrownBy(()->jdbc.update("UPDATE trading_as400_movement SET sicoui=1000000 WHERE event_id=? AND leg_index=0",firstEvent))
                     .isInstanceOf(DataAccessException.class);
             transaction.setRollbackOnly();
         });
     }
 
+
+
+    @Test
+    void groupParentCannotPromoteWhenExpectedCountExceedsPersistedLegs() {
+        transactions.executeWithoutResult(transaction -> {
+            long companyId=COMPANY_IDS.incrementAndGet();
+            long accountId=createAccount(companyId);
+            long orderId=createDraftOrder(accountId,companyId,"group-count-"+companyId);
+            jdbc.update("UPDATE trading_as400_sync_outbox SET next_attempt_at=NOW()+INTERVAL '1 hour'");
+            as400Outbox.enqueueFilled(orderId);
+            var event=as400Outbox.claimDue(1,Duration.ofMinutes(5)).getFirst();
+            prepareAs400Group(event.id());
+            progressAs400Group(event.id(),"SETTLED");
+            jdbc.update("UPDATE trading_as400_sync_outbox SET expected_leg_count=5 WHERE id=?",event.id());
+            as400Outbox.advance(event,com.saamp.trading.as400.As400SyncState.SETTLED,Duration.ofHours(1));
+            assertThat(jdbc.queryForObject("SELECT sync_state FROM trading_as400_sync_outbox WHERE id=?",String.class,event.id())).isEqualTo("PENDING");
+            jdbc.update("UPDATE trading_as400_sync_outbox SET expected_leg_count=4 WHERE id=?",event.id());
+            as400Outbox.advance(event,com.saamp.trading.as400.As400SyncState.SETTLED,Duration.ofHours(1));
+            assertThat(jdbc.queryForObject("SELECT sync_state FROM trading_as400_sync_outbox WHERE id=?",String.class,event.id())).isEqualTo("SETTLED");
+            transaction.setRollbackOnly();
+        });
+    }
+
+    @Test
+    void childAcceptedRequiresProvisionalAndPreservesParentIdentitySeparation() {
+        transactions.executeWithoutResult(transaction -> {
+            long companyId=COMPANY_IDS.incrementAndGet();
+            long accountId=createAccount(companyId);
+            long orderId=createDraftOrder(accountId,companyId,"child-check-"+companyId);
+            as400Outbox.enqueueFilled(orderId);
+            long eventId=jdbc.queryForObject("SELECT id FROM trading_as400_sync_outbox WHERE order_id=?",Long.class,orderId);
+            prepareAs400Group(eventId);
+            assertThat(jdbc.queryForObject("SELECT sicoui IS NULL AND siprov IS NULL FROM trading_as400_sync_outbox WHERE id=?",Boolean.class,eventId)).isTrue();
+            assertThatThrownBy(()->jdbc.update("""
+                    UPDATE trading_as400_movement SET sync_state='ACCEPTED',submitted_at=NOW(),accepted_at=NOW()
+                    WHERE event_id=? AND leg_index=0
+                    """,eventId)).isInstanceOf(DataAccessException.class);
+            transaction.setRollbackOnly();
+        });
+    }
+    private void prepareAs400Group(long eventId) {
+        jdbc.update("""
+                UPDATE trading_as400_sync_outbox SET fx_rate=1.00,fx_frozen_at=NOW(),
+                  fx_source='TEST',stonex_exid='EXID-TEST' WHERE id=?
+                """,eventId);
+        jdbc.update("""
+                INSERT INTO trading_as400_movement
+                  (event_id,leg_index,leg_role,siste,nucli,sicoui,siacfv,simet,sipds,sicot,sitxch,siref3,
+                   sicnd,siref2,execution_date,execution_time)
+                SELECT ?,i,CASE i WHEN 0 THEN 'CLIENT' WHEN 1 THEN 'INTERCO_LFMP'
+                  WHEN 2 THEN 'INTERCO_SAAMP' ELSE 'STONEX' END,'B',456,
+                  nextval('trading_as400_sicoui_seq'),'V','O',31.10,1846,1,'EXID-TEST','OR SPOT','OR SPOT',260708,120000
+                FROM generate_series(0,3) i
+                """,eventId);
+    }
+
+    private void progressAs400Group(long eventId,String state) {
+        jdbc.update("""
+                UPDATE trading_as400_movement SET sync_state=?,submitted_at=NOW(),
+                  siprov=CASE WHEN ? IN ('ACCEPTED','SETTLED') THEN 904736+leg_index ELSE NULL END,
+                  accepted_at=CASE WHEN ? IN ('ACCEPTED','SETTLED') THEN NOW() ELSE NULL END,
+                  settled_at=CASE WHEN ?='SETTLED' THEN NOW() ELSE NULL END
+                WHERE event_id=?
+                """,state,state,state,state,eventId);
+    }
     private boolean reserveAfterBarrier(CountDownLatch ready, CountDownLatch start, long accountId, long orderId) throws InterruptedException {
         ready.countDown();
         start.await();

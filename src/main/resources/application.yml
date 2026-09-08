@@ -33,6 +33,13 @@ trading:
     sync-delay: ${TRADING_AS400_SYNC_DELAY:30s}
     submitted-poll-delay: ${TRADING_AS400_SUBMITTED_POLL_DELAY:5m}
     accepted-poll-delay: ${TRADING_AS400_ACCEPTED_POLL_DELAY:1h}
+    lfmp-company: ${TRADING_AS400_LFMP_COMPANY:B}
+    saamp-company: ${TRADING_AS400_SAAMP_COMPANY:I}
+    lfmp-saamp-interco-nucli: ${TRADING_AS400_LFMP_SAAMP_INTERCO_NUCLI:15001}
+    saamp-lfmp-interco-nucli: ${TRADING_AS400_SAAMP_LFMP_INTERCO_NUCLI:15002}
+    stonex-eur-nucli: ${TRADING_AS400_STONEX_EUR_NUCLI:15267}
+    stonex-usd-nucli: ${TRADING_AS400_STONEX_USD_NUCLI:15268}
+    fx-quote-field: ${TRADING_AS400_FX_QUOTE_FIELD:MID}
   cors:
     allowed-origins: ${TRADING_CORS_ALLOWED_ORIGINS:}
   security:

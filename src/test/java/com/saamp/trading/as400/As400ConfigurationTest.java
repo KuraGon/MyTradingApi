@@ -16,7 +16,7 @@ class As400ConfigurationTest {
         context.run(ctx->{
             assertThat(ctx).hasNotFailed().doesNotHaveBean("as400JdbcTemplate").hasSingleBean(JdbcTemplate.class);
             assertThatThrownBy(()->ctx.getBean(As400MovementGateway.class)
-                    .submit(As400SyncFixtures.movement(As400SyncFixtures.event(As400SyncState.PENDING))))
+                    .submit(As400SyncFixtures.group(As400SyncState.PENDING)))
                     .hasMessage("AS400_NOT_CONFIGURED");
         });
     }

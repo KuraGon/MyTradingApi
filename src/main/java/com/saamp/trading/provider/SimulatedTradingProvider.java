@@ -8,12 +8,14 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
+import java.security.SecureRandom;
+import java.util.Base64;
 
 /** Deterministic local provider for Lot 2.1/2.2 and end-to-end tests without StoneX. */
 @Component
 @ConditionalOnProperty(name = "trading.provider.mode", havingValue = "SIMULATED", matchIfMissing = true)
 public class SimulatedTradingProvider implements TradingProvider {
+    private static final SecureRandom EXECUTION_IDS = new SecureRandom();
     private final PricingRepository pricing;
     public SimulatedTradingProvider(PricingRepository pricing) { this.pricing = pricing; }
 
@@ -33,7 +35,16 @@ public class SimulatedTradingProvider implements TradingProvider {
         var market = pricing.findMarketPrice(request.pair()).orElseThrow();
         var rate = request.side() == OrderSide.BUY ? market.ask() : market.bid();
         return new OrderAcknowledgement(AcknowledgementState.FILLED, request.clientOrderId(),
-                "SIM-" + UUID.randomUUID(), rate, null, null);
+                newExecutionId(), rate, null, null);
+    }
+
+    /** Produit une référence d'exécution simulée de 20 caractères compatible avec SIREF3.
+     * @return une référence SIM- portant 96 bits aléatoires, sans troncature
+     */
+    private static String newExecutionId() {
+        byte[] identifier = new byte[12];
+        EXECUTION_IDS.nextBytes(identifier);
+        return "SIM-" + Base64.getUrlEncoder().withoutPadding().encodeToString(identifier);
     }
 
     @Override public Optional<ExecutionReport> queryRequestStatus(String clientOrderId) { return Optional.empty(); }
