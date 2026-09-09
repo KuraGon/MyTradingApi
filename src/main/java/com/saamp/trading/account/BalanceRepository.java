@@ -34,6 +34,8 @@ public class BalanceRepository {
 
     /** Locks one balance row, creating it at zero first when it does not exist. */
     public BigDecimal lockQuantity(long accountId, Asset asset) {
+        // Même verrou commun pour les mouvements externes et les décisions d'ordre.
+        jdbc.queryForObject("SELECT id FROM trading_account WHERE id=? FOR UPDATE", Long.class, accountId);
         jdbc.update("INSERT INTO trading_balance(account_id, asset, quantity) VALUES (?,?,0) ON CONFLICT (account_id,asset) DO NOTHING", accountId, asset.name());
         return jdbc.queryForObject("SELECT quantity FROM trading_balance WHERE account_id=? AND asset=? FOR UPDATE", BigDecimal.class, accountId, asset.name());
     }

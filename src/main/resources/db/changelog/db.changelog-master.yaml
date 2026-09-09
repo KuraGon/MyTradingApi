@@ -19,3 +19,7 @@ databaseChangeLog:
       file: db/changelog/009-as400-sicouvi.sql
   - include:
       file: db/changelog/010-as400-movement-group.sql
+  - include:
+      file: db/changelog/011-reservation-semantics.sql
+  - include:
+      file: db/changelog/012-order-error-code-width.sql

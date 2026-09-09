@@ -1,360 +1,188 @@
 package com.saamp.trading.order;
 
-import com.saamp.trading.account.AccountRepository;
-import com.saamp.trading.account.Balance;
-import com.saamp.trading.account.BalanceRepository;
-import com.saamp.trading.account.TradingAccount;
-import com.saamp.trading.common.ClientOrderIdFactory;
+import com.saamp.trading.account.*;
 import com.saamp.trading.common.TradingException;
+import com.saamp.trading.config.TradingProperties;
 import com.saamp.trading.domain.*;
 import com.saamp.trading.pricing.*;
 import com.saamp.trading.provider.*;
-import com.saamp.trading.reservation.ReservationRepository;
-import com.saamp.trading.reservation.ReservationService;
-import com.saamp.trading.risk.MarginRateRepository;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.HttpStatus;
-
+import com.saamp.trading.reservation.*;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
-import java.util.Optional;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.*;
+import java.util.*;
+import org.junit.jupiter.api.*;
+import org.springframework.transaction.PlatformTransactionManager;
+import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.*;
 
-@ExtendWith(MockitoExtension.class)
+/** Vérifie la frontière entre admission atomique et transmission irréversible. */
 class OrderExecutionServiceTest {
+    AccountRepository accounts=mock(AccountRepository.class);
+    BalanceRepository balances=mock(BalanceRepository.class);
+    PricingRepository configs=mock(PricingRepository.class);
+    PricingService pricing=mock(PricingService.class);
+    ReservationRepository reservations=mock(ReservationRepository.class);
+    OrderRepository orders=mock(OrderRepository.class);
+    TradingProvider provider=mock(TradingProvider.class);
+    ExecutionEventHandler events=mock(ExecutionEventHandler.class);
+    ExecutionGateRepository gate=mock(ExecutionGateRepository.class);
+    OrderCapacityService capacity=mock(OrderCapacityService.class);
+    OrderExecutionService service;
+    TradingOrder order;
+    TradingAccount account;
+    ClientQuote quote;
 
-    private static final long COMPANY_ID = 42L;
-    private static final long ACCOUNT_ID = 7L;
-    private static final long USER_ID = 99L;
-    private static final long ORDER_ID = 123L;
-    private static final OffsetDateTime EXPIRES_AT = OffsetDateTime.parse("2026-09-03T10:02:00Z");
-
-    @Mock AccountRepository accounts;
-    @Mock BalanceRepository balances;
-    @Mock PricingRepository pricingRepository;
-    @Mock PricingService pricing;
-    @Mock ReservationService reservations;
-    @Mock ReservationRepository reservationRepository;
-    @Mock MarginRateRepository marginRates;
-    @Mock OrderRepository orders;
-    @Mock TradingProvider provider;
-    @Mock ExecutionEventHandler executionEvents;
-    @Mock ExecutionGateRepository gate;
-
-    private OrderExecutionService service;
-
-    @BeforeEach
-    void setUp() {
-        lenient().when(provider.supportsSpotOrderSubmission()).thenReturn(true);
-        service = new OrderExecutionService(accounts, balances, pricingRepository, pricing, reservations,
-                reservationRepository, marginRates, orders, provider, executionEvents, gate);
+    @BeforeEach void setup() {
+        account=new TradingAccount(7,42,Asset.EUR,AccountStatus.ACTIVE,null,null,null,1,OffsetDateTime.now(),OffsetDateTime.now());
+        order=mock(TradingOrder.class);
+        when(order.id()).thenReturn(123L); when(order.accountId()).thenReturn(7L); when(order.companyId()).thenReturn(42L);
+        when(order.asset()).thenReturn(Asset.XAU); when(order.side()).thenReturn(OrderSide.BUY);
+        when(order.quantityOz()).thenReturn(BigDecimal.ONE); when(order.status()).thenReturn(OrderStatus.DRAFT);
+        when(order.indicativeClientPrice()).thenReturn(new BigDecimal("100"));
+        when(order.createdAt()).thenReturn(OffsetDateTime.now());
+        when(order.clOrdId()).thenReturn("CL-123"); when(order.pair()).thenReturn("XAUEUR");
+        quote=new ClientQuote(Asset.XAU,"XAUEUR",new BigDecimal("99"),new BigDecimal("100"),
+                new BigDecimal("100"),new BigDecimal("99"),new BigDecimal("100"),new BigDecimal("99"),
+                BigDecimal.ZERO,BigDecimal.ZERO,1,OffsetDateTime.now());
+        when(accounts.findByCompanyId(42)).thenReturn(Optional.of(account));
+        when(accounts.lockById(7)).thenReturn(Optional.of(account));
+        when(orders.findById(123)).thenReturn(Optional.of(order)); when(orders.lockById(123)).thenReturn(Optional.of(order));
+        when(gate.isOpen()).thenReturn(true); when(provider.supportsSpotOrderSubmission()).thenReturn(true);
+        when(pricing.quoteForExecution(42,Asset.XAU,Asset.EUR)).thenReturn(quote);
+        when(configs.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(new AssetConfig(Asset.XAU,new BigDecimal("0.000001"),6,new BigDecimal("0.002"),true)));
+        when(orders.markPending(123)).thenReturn(1);
+        when(provider.submitSpotOrder(any())).thenReturn(new OrderAcknowledgement(AcknowledgementState.IN_PROCESS,"CL-123",null,null,null,null));
+        service=new OrderExecutionService(accounts,balances,configs,pricing,reservations,orders,provider,events,gate,capacity,
+                new TradingProperties(),mock(PlatformTransactionManager.class));
     }
 
-    @Test
-    void purchaseBeyondAvailableFundsIsRejected() {
-        stubActiveAccount(null);
-        stubPreviewBasics(OrderSide.BUY, Asset.XAU, "buy-no-funds");
-        doThrow(new TradingException(HttpStatus.CONFLICT, "INSUFFICIENT_AVAILABLE_BALANCE", "insufficient"))
-                .when(reservations).reserve(eq(ACCOUNT_ID), eq(Asset.EUR), any(BigDecimal.class), eq(ORDER_ID));
-
-        assertThatThrownBy(() -> service.preview(COMPANY_ID, USER_ID, request(Asset.XAU, OrderSide.BUY, "10", "buy-no-funds")))
-                .isInstanceOfSatisfying(TradingException.class,
-                        ex -> assertThat(ex.getCode()).isEqualTo("INSUFFICIENT_AVAILABLE_BALANCE"));
-
-        verify(provider, never()).submitSpotOrder(any());
+    @Test void submitRecalculatesBeforeConditionalTransitionAndProvider() {
+        service.submit(123,42,99);
+        var sequence=inOrder(pricing,accounts,orders,capacity,provider);
+        sequence.verify(pricing).quoteForExecution(42,Asset.XAU,Asset.EUR);
+        sequence.verify(accounts).lockById(7);
+        sequence.verify(orders).lockById(123);
+        sequence.verify(capacity).reserve(eq(account),eq(order),anyMap(),any(),any(),eq(true));
+        sequence.verify(orders).markPending(123);
+        sequence.verify(provider).submitSpotOrder(any());
     }
 
-    @Test
-    void fullyCoveredSaleReservesMetalAndNoCash() {
-        stubActiveAccount(null);
-        stubPreviewBasics(OrderSide.SELL, Asset.XAU, "sell-covered");
-        when(reservations.available(ACCOUNT_ID, Asset.XAU)).thenReturn(new BigDecimal("10"));
-
-        OrderPreviewResponse result = service.preview(COMPANY_ID, USER_ID,
-                request(Asset.XAU, OrderSide.SELL, "5", "sell-covered"));
-
-        assertThat(result.reservedMetal()).isEqualByComparingTo("5");
-        assertThat(result.reservedCash()).isEqualByComparingTo("0");
-        assertThat(result.expiresAt()).isEqualTo(EXPIRES_AT);
-        verify(reservations).reserve(ACCOUNT_ID, Asset.XAU, new BigDecimal("5.000000"), ORDER_ID);
-        verify(reservations, never()).reserve(eq(ACCOUNT_ID), eq(Asset.EUR), any(BigDecimal.class), eq(ORDER_ID));
+    @Test void changedCapacityNeverTransmits() {
+        when(capacity.reserve(any(),any(),anyMap(),any(),any(),eq(true)))
+                .thenThrow(new TradingException(org.springframework.http.HttpStatus.CONFLICT,"INSUFFICIENT_FREE_EQUITY","test"));
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOf(TradingException.class);
+        verify(provider,never()).submitSpotOrder(any()); verify(orders,never()).markPending(anyLong());
     }
 
-    @Test
-    void partiallyUncoveredSaleReservesOnlyMarginCashForUncoveredPart() {
-        stubActiveAccount(null);
-        stubPreviewBasics(OrderSide.SELL, Asset.XAU, "sell-partial");
-        when(reservations.available(ACCOUNT_ID, Asset.XAU)).thenReturn(new BigDecimal("4"));
-        when(marginRates.currentRate(ACCOUNT_ID, Asset.XAU)).thenReturn(new BigDecimal("0.05"));
-
-        OrderPreviewResponse result = service.preview(COMPANY_ID, USER_ID,
-                request(Asset.XAU, OrderSide.SELL, "10", "sell-partial"));
-
-        assertThat(result.reservedMetal()).isEqualByComparingTo("4");
-        assertThat(result.reservedCash()).isEqualByComparingTo("630.000000");
-        verify(reservations).reserve(ACCOUNT_ID, Asset.XAU, new BigDecimal("4"), ORDER_ID);
-        verify(reservations).reserve(ACCOUNT_ID, Asset.EUR, new BigDecimal("630.000000"), ORDER_ID);
+    @Test void priceMovedReleasesBeforeAnyTransmission() {
+        when(order.indicativeClientPrice()).thenReturn(new BigDecimal("90"));
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("PRICE_MOVED"));
+        verify(reservations).releaseForOrder(123); verifyNoInteractions(capacity); verify(provider,never()).submitSpotOrder(any());
     }
 
-    @Test
-    void uncoveredSaleBeyondCapacityIsRejected() {
-        stubActiveAccount(null);
-        stubPreviewBasics(OrderSide.SELL, Asset.XAU, "sell-over-capacity");
-        when(reservations.available(ACCOUNT_ID, Asset.XAU)).thenReturn(BigDecimal.ZERO);
-        when(marginRates.currentRate(ACCOUNT_ID, Asset.XAU)).thenReturn(new BigDecimal("0.05"));
-        doThrow(new TradingException(HttpStatus.CONFLICT, "INSUFFICIENT_AVAILABLE_BALANCE", "insufficient"))
-                .when(reservations).reserve(ACCOUNT_ID, Asset.EUR, new BigDecimal("1050.000000"), ORDER_ID);
-
-        assertThatThrownBy(() -> service.preview(COMPANY_ID, USER_ID,
-                request(Asset.XAU, OrderSide.SELL, "10", "sell-over-capacity")))
-                .isInstanceOfSatisfying(TradingException.class,
-                        ex -> assertThat(ex.getCode()).isEqualTo("INSUFFICIENT_AVAILABLE_BALANCE"));
-
-        verify(provider, never()).submitSpotOrder(any());
+    @Test void expiredPreviewNeverTransmits() {
+        when(reservations.findEarliestExpiryForOrder(123)).thenReturn(Optional.of(OffsetDateTime.now().minusMinutes(1)));
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("RESERVATION_EXPIRED"));
+        verify(orders).markExpired(123); verify(reservations).expireForOrder(123); verify(provider,never()).submitSpotOrder(any());
     }
 
+    @Test void anotherCompanyRemains404() {
+        assertThatThrownBy(()->service.submit(123,43,99)).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getStatus().value()).isEqualTo(404));
+        verifyNoInteractions(pricing); verify(provider,never()).submitSpotOrder(any());
+    }
 
-    @Test
-    void providerNotReadyRefusesSubmissionBeforePriceRefreshOrNetworkCall() {
-        TradingOrder draft = order(ORDER_ID, COMPANY_ID, OrderStatus.DRAFT, "provider-not-ready", new BigDecimal("100.000000"));
-        when(orders.findById(ORDER_ID)).thenReturn(Optional.of(draft));
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.ACTIVE, null)));
-        when(gate.isOpen()).thenReturn(true);
+    @Test void providerNotReadyDoesNotFetchPriceOrSend() {
         when(provider.supportsSpotOrderSubmission()).thenReturn(false);
-
-        assertThatThrownBy(() -> service.submit(ORDER_ID, COMPANY_ID, USER_ID))
-                .isInstanceOfSatisfying(TradingException.class,
-                        ex -> assertThat(ex.getCode()).isEqualTo("PROVIDER_EXECUTION_NOT_READY"));
-
-        verify(pricing, never()).quoteForExecution(anyLong(), any(), any());
-        verify(provider, never()).submitSpotOrder(any());
-        verify(orders, never()).markPending(anyLong());
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("PROVIDER_EXECUTION_NOT_READY"));
+        verifyNoInteractions(pricing); verify(provider,never()).submitSpotOrder(any());
     }
 
-    @Test
-    void priceMovedBeyondToleranceReleasesReservationsWithoutProviderCall() {
-        stubSubmit(new BigDecimal("100.000000"), "price-moved");
-        when(pricing.quoteForExecution(COMPANY_ID, Asset.XAU, Asset.EUR)).thenReturn(quote("101.000000", "101.000000"));
-
-        assertThatThrownBy(() -> service.submit(ORDER_ID, COMPANY_ID, USER_ID))
-                .isInstanceOfSatisfying(TradingException.class,
-                        ex -> {
-                            assertThat(ex.getCode()).isEqualTo("PRICE_MOVED");
-                            assertThat(ex.getProperties()).containsEntry("currentClientPrice", new BigDecimal("101.000000"))
-                                    .containsEntry("pair", "XAUEUR")
-                                    .containsKey("priceAsOf")
-                                    .doesNotContainKeys("marketAsk", "marketBid", "spread");
-                        });
-
-        verify(orders).markRejected(eq(ORDER_ID), eq("PRICE_MOVED"), anyString());
-        verify(reservations).releaseForOrder(ORDER_ID);
-        verify(provider, never()).submitSpotOrder(any());
+    @Test void stalePriceDoesNotReserveOrSend() {
+        when(pricing.quoteForExecution(42,Asset.XAU,Asset.EUR)).thenThrow(new TradingException(
+                org.springframework.http.HttpStatus.CONFLICT,"MARKET_PRICE_STALE","test"));
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOf(TradingException.class);
+        verifyNoInteractions(capacity); verify(provider,never()).submitSpotOrder(any());
     }
 
-    @Test
-    void providerInProcessMarksPendingUnknownWithoutSettlementOrRetransmission() {
-        TradingOrder draft = order(ORDER_ID, COMPANY_ID, OrderStatus.DRAFT, "provider-in-process", new BigDecimal("100.000000"));
-        TradingOrder unknown = order(ORDER_ID, COMPANY_ID, OrderStatus.PENDING_UNKNOWN, "provider-in-process", new BigDecimal("100.000000"));
-        when(orders.findById(ORDER_ID)).thenReturn(Optional.of(draft), Optional.of(unknown));
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.ACTIVE, null)));
-        when(gate.isOpen()).thenReturn(true);
-        when(reservationRepository.hasActiveForOrder(ORDER_ID)).thenReturn(true);
-        when(pricing.quoteForExecution(COMPANY_ID, Asset.XAU, Asset.EUR)).thenReturn(quote("100.000000", "100.000000"));
-        when(pricingRepository.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(assetConfig()));
-        when(provider.submitSpotOrder(any())).thenReturn(new OrderAcknowledgement(
-                AcknowledgementState.IN_PROCESS, draft.clOrdId(), null, null, "IN_PROCESS", "Pending"));
-
-        TradingOrder result = service.submit(ORDER_ID, COMPANY_ID, USER_ID);
-
-        assertThat(result.status()).isEqualTo(OrderStatus.PENDING_UNKNOWN);
-        verify(orders).markPendingUnknown(ORDER_ID, "IN_PROCESS", "Pending");
-        verify(executionEvents, never()).handleFilled(any(), any(), anyString(), any(), any(), anyString());
-        verify(provider, times(1)).submitSpotOrder(any());
+    @Test void pendingUnknownIsNeverResent() {
+        when(order.status()).thenReturn(OrderStatus.PENDING_UNKNOWN);
+        assertThat(service.submit(123,42,99)).isSameAs(order);
+        verifyNoInteractions(pricing); verify(provider,never()).submitSpotOrder(any());
     }
 
-    @Test
-    void providerExceptionCreatesPendingUnknownAndClientRetryDoesNotRetransmit() {
-        TradingOrder draft = order(ORDER_ID, COMPANY_ID, OrderStatus.DRAFT, "provider-exception", new BigDecimal("100.000000"));
-        TradingOrder unknown = order(ORDER_ID, COMPANY_ID, OrderStatus.PENDING_UNKNOWN, "provider-exception", new BigDecimal("100.000000"));
-        when(orders.findById(ORDER_ID)).thenReturn(Optional.of(draft), Optional.of(unknown), Optional.of(unknown));
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.ACTIVE, null)));
-        when(gate.isOpen()).thenReturn(true);
-        when(reservationRepository.hasActiveForOrder(ORDER_ID)).thenReturn(true);
-        when(pricing.quoteForExecution(COMPANY_ID, Asset.XAU, Asset.EUR)).thenReturn(quote("100.000000", "100.000000"));
-        when(pricingRepository.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(assetConfig()));
-        when(provider.submitSpotOrder(any())).thenThrow(new RuntimeException("timeout"));
-
-        TradingOrder first = service.submit(ORDER_ID, COMPANY_ID, USER_ID);
-        TradingOrder retry = service.submit(ORDER_ID, COMPANY_ID, USER_ID);
-
-        assertThat(first.status()).isEqualTo(OrderStatus.PENDING_UNKNOWN);
-        assertThat(retry.status()).isEqualTo(OrderStatus.PENDING_UNKNOWN);
-        verify(provider, times(1)).submitSpotOrder(any());
-        verify(orders).markPendingUnknown(ORDER_ID, "PROVIDER_UNCERTAIN", "timeout");
+    @Test void providerFailureRetainsReservationsAndBecomesUnknown() {
+        when(provider.submitSpotOrder(any())).thenThrow(new IllegalStateException("timeout"));
+        service.submit(123,42,99);
+        verify(orders).markPendingUnknown(eq(123L),eq("PROVIDER_UNCERTAIN"),anyString());
+        verify(reservations,never()).releaseForOrder(anyLong());
     }
 
-    @Test
-    void duplicateIdempotencyKeyReturnsExistingOrderAndCreatesNoSecondOrder() {
-        String key = "same-key";
-        TradingOrder existing = order(ORDER_ID, COMPANY_ID, OrderStatus.DRAFT, key, new BigDecimal("100.000000"));
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.ACTIVE, null)));
-        when(orders.findByIdempotencyKey(key)).thenReturn(Optional.empty(), Optional.of(existing));
-        when(pricingRepository.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(assetConfig()));
-        when(pricing.quoteForDisplay(COMPANY_ID, Asset.XAU, Asset.EUR)).thenReturn(quote("100.000000", "100.000000"));
-        when(orders.insertDraft(anyLong(), anyLong(), any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), anyString(), anyString()))
-                .thenReturn(ORDER_ID);
-        lenient().when(reservationRepository.findEarliestExpiryForOrder(ORDER_ID)).thenReturn(Optional.of(EXPIRES_AT));
-
-        OrderPreviewResponse first = service.preview(COMPANY_ID, USER_ID, request(Asset.XAU, OrderSide.BUY, "1", key));
-        OrderPreviewResponse second = service.preview(COMPANY_ID, USER_ID, request(Asset.XAU, OrderSide.BUY, "1", key));
-
-        assertThat(first.orderId()).isEqualTo(ORDER_ID);
-        assertThat(second.orderId()).isEqualTo(ORDER_ID);
-        assertThat(existing.clOrdId()).isEqualTo(ClientOrderIdFactory.fromIdempotencyKey(key));
-        verify(orders, times(1)).insertDraft(anyLong(), anyLong(), any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), anyString(), anyString());
-        verify(reservations, times(1)).reserve(eq(ACCOUNT_ID), eq(Asset.EUR), any(BigDecimal.class), eq(ORDER_ID));
+    @Test void rejectedProviderUsesTransactionalRejection() {
+        when(provider.submitSpotOrder(any())).thenReturn(new OrderAcknowledgement(AcknowledgementState.REJECTED,"CL",null,null,"REJECT","test"));
+        service.submit(123,42,99);
+        verify(events).handleRejected(order,"REJECT","test");
     }
 
-    @Test
-    void expiredReservationMarksOrderExpiredAndRequiresNewQuote() {
-        TradingOrder draft = order(ORDER_ID, COMPANY_ID, OrderStatus.DRAFT, "expired", new BigDecimal("100.000000"));
-        when(orders.findById(ORDER_ID)).thenReturn(Optional.of(draft));
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.ACTIVE, null)));
-        when(gate.isOpen()).thenReturn(true);
-        when(reservationRepository.hasActiveForOrder(ORDER_ID)).thenReturn(false);
-
-        assertThatThrownBy(() -> service.submit(ORDER_ID, COMPANY_ID, USER_ID))
-                .isInstanceOfSatisfying(TradingException.class,
-                        ex -> assertThat(ex.getCode()).isEqualTo("RESERVATION_EXPIRED"));
-
-        verify(orders).markExpired(ORDER_ID);
-        verify(provider, never()).submitSpotOrder(any());
+    @Test void suspendedAccountIsRejectedBeforeQuotesAndSubmission() {
+        var suspended=new TradingAccount(7,42,Asset.EUR,AccountStatus.SUSPENDED,null,null,null,1,null,null);
+        when(accounts.findByCompanyId(42)).thenReturn(Optional.of(suspended));
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("ACCOUNT_NOT_ACTIVE"));
+        verifyNoInteractions(pricing,capacity);
+        verify(provider,never()).submitSpotOrder(any());
     }
 
-    @Test
-    void orderFromAnotherCompanyReturns404WithoutRevealingExistence() {
-        TradingOrder otherCompanyOrder = order(ORDER_ID, 111L, OrderStatus.DRAFT, "other-company", new BigDecimal("100.000000"));
-        when(orders.findById(ORDER_ID)).thenReturn(Optional.of(otherCompanyOrder));
-
-        assertThatThrownBy(() -> service.submit(ORDER_ID, COMPANY_ID, USER_ID))
-                .isInstanceOfSatisfying(TradingException.class, ex -> {
-                    assertThat(ex.getStatus()).isEqualTo(HttpStatus.NOT_FOUND);
-                    assertThat(ex.getCode()).isEqualTo("ORDER_NOT_FOUND");
-                });
-
-        verify(accounts, never()).findByCompanyId(anyLong());
-        verify(provider, never()).submitSpotOrder(any());
+    @Test void accountSuspendedDuringQuoteIsRejectedUnderAccountLock() {
+        when(accounts.lockById(7)).thenReturn(Optional.of(new TradingAccount(7,42,Asset.EUR,AccountStatus.SUSPENDED,null,null,null,1,null,null)));
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("ACCOUNT_NOT_ACTIVE"));
+        verifyNoInteractions(capacity);
+        verify(provider,never()).submitSpotOrder(any());
     }
 
-    @Test
-    void stalePriceAtSubmissionIsRejectedBeforeProviderCall() {
-        TradingOrder draft = order(ORDER_ID, COMPANY_ID, OrderStatus.DRAFT, "stale-submit", new BigDecimal("100.000000"));
-        when(orders.findById(ORDER_ID)).thenReturn(Optional.of(draft));
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.ACTIVE, null)));
-        when(gate.isOpen()).thenReturn(true);
-        when(reservationRepository.hasActiveForOrder(ORDER_ID)).thenReturn(true);
-        when(pricing.quoteForExecution(COMPANY_ID, Asset.XAU, Asset.EUR))
-                .thenThrow(new TradingException(HttpStatus.CONFLICT, "MARKET_PRICE_STALE", "stale"));
-
-        assertThatThrownBy(() -> service.submit(ORDER_ID, COMPANY_ID, USER_ID))
-                .isInstanceOfSatisfying(TradingException.class,
-                        ex -> assertThat(ex.getCode()).isEqualTo("MARKET_PRICE_STALE"));
-
-        verify(orders, never()).markPending(anyLong());
-        verify(provider, never()).submitSpotOrder(any());
+    @Test void executionGateStillBlocksBeforeQuote() {
+        when(gate.isOpen()).thenReturn(false);
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("EXECUTION_BLOCKED"));
+        verifyNoInteractions(pricing,capacity);
+        verify(provider,never()).submitSpotOrder(any());
     }
 
-    @Test
-    void suspendedAccountIsRejectedImmediately() {
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.SUSPENDED, null)));
-
-        assertThatThrownBy(() -> service.preview(COMPANY_ID, USER_ID,
-                request(Asset.XAU, OrderSide.BUY, "1", "suspended")))
-                .isInstanceOfSatisfying(TradingException.class,
-                        ex -> assertThat(ex.getCode()).isEqualTo("ACCOUNT_NOT_ACTIVE"));
-
-        verify(pricing, never()).quoteForDisplay(anyLong(), any(), any());
-        verify(provider, never()).submitSpotOrder(any());
+    @Test void previewPositionLimitStillRequiresExecutionFreshnessBeforeWriting() {
+        when(accounts.findByCompanyId(42)).thenReturn(Optional.of(new TradingAccount(7,42,Asset.EUR,AccountStatus.ACTIVE,null,new BigDecimal("1000"),null,1,null,null)));
+        when(pricing.quoteForDisplay(42,Asset.XAU,Asset.EUR)).thenReturn(quote);
+        when(pricing.quoteForExecution(42,Asset.XAU,Asset.EUR)).thenThrow(new TradingException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,"MARKET_PRICE_STALE","test"));
+        assertThatThrownBy(()->service.preview(42,99,previewRequest(BigDecimal.ONE))).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("MARKET_PRICE_STALE"));
+        verify(accounts,never()).lockById(anyLong());
+        verifyNoInteractions(capacity);
     }
 
-    @Test
-    void positionLimitUsesExecutionFreshPriceAndPropagatesMarketPriceStale() {
-        TradingAccount limited = account(AccountStatus.ACTIVE, new BigDecimal("1000000"));
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(limited));
-        when(orders.findByIdempotencyKey("position-stale")).thenReturn(Optional.empty());
-        when(pricingRepository.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(assetConfig()));
-        when(pricing.quoteForDisplay(COMPANY_ID, Asset.XAU, Asset.EUR)).thenReturn(quote("100.000000", "100.000000"));
-        when(balances.find(eq(ACCOUNT_ID), any(Asset.class))).thenReturn(Optional.empty());
-        when(balances.find(ACCOUNT_ID, Asset.XAU)).thenReturn(Optional.of(new Balance(ACCOUNT_ID, Asset.XAU, BigDecimal.ONE, OffsetDateTime.now())));
-        when(pricing.quoteForExecution(COMPANY_ID, Asset.XAU, Asset.EUR))
-                .thenThrow(new TradingException(HttpStatus.CONFLICT, "MARKET_PRICE_STALE", "stale"));
-
-        assertThatThrownBy(() -> service.preview(COMPANY_ID, USER_ID,
-                request(Asset.XAU, OrderSide.BUY, "1", "position-stale")))
-                .isInstanceOfSatisfying(TradingException.class,
-                        ex -> assertThat(ex.getCode()).isEqualTo("MARKET_PRICE_STALE"));
-
-        verify(pricing).quoteForExecution(COMPANY_ID, Asset.XAU, Asset.EUR);
-        verify(orders, never()).insertDraft(anyLong(), anyLong(), any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), anyString(), anyString());
+    @Test void disabledAssetAndMinimumQuantityStillRejectBeforeDraftInsertion() {
+        when(pricing.quoteForDisplay(42,Asset.XAU,Asset.EUR)).thenReturn(quote);
+        when(configs.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(new AssetConfig(Asset.XAU,BigDecimal.ONE,6,new BigDecimal("0.002"),false)));
+        assertThatThrownBy(()->service.preview(42,99,previewRequest(BigDecimal.ONE))).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("ASSET_DISABLED"));
+        when(configs.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(new AssetConfig(Asset.XAU,BigDecimal.ONE,6,new BigDecimal("0.002"),true)));
+        assertThatThrownBy(()->service.preview(42,99,previewRequest(new BigDecimal("0.5")))).isInstanceOfSatisfying(TradingException.class,
+                e->assertThat(e.getCode()).isEqualTo("QUANTITY_TOO_SMALL"));
+        verifyNoInteractions(capacity);
+        verify(orders,never()).lockById(anyLong());
     }
 
-    private void stubActiveAccount(BigDecimal positionLimit) {
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.ACTIVE, positionLimit)));
+    private OrderPreviewRequest previewRequest(BigDecimal quantity) {
+        return new OrderPreviewRequest(Asset.XAU,OrderSide.BUY,quantity,QuantityUnit.OZ,"preview-control");
     }
 
-    private void stubPreviewBasics(OrderSide side, Asset asset, String key) {
-        when(orders.findByIdempotencyKey(key)).thenReturn(Optional.empty());
-        when(pricingRepository.findAssetConfig(asset)).thenReturn(Optional.of(assetConfig()));
-        when(pricing.quoteForDisplay(COMPANY_ID, asset, Asset.EUR)).thenReturn(quote("100.000000", "100.000000"));
-        when(orders.insertDraft(anyLong(), anyLong(), any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), anyString(), anyString()))
-                .thenReturn(ORDER_ID);
-        lenient().when(reservationRepository.findEarliestExpiryForOrder(ORDER_ID)).thenReturn(Optional.of(EXPIRES_AT));
-    }
-
-    private void stubSubmit(BigDecimal indicativeClientPrice, String key) {
-        TradingOrder draft = order(ORDER_ID, COMPANY_ID, OrderStatus.DRAFT, key, indicativeClientPrice);
-        when(orders.findById(ORDER_ID)).thenReturn(Optional.of(draft));
-        when(accounts.findByCompanyId(COMPANY_ID)).thenReturn(Optional.of(account(AccountStatus.ACTIVE, null)));
-        when(gate.isOpen()).thenReturn(true);
-        when(reservationRepository.hasActiveForOrder(ORDER_ID)).thenReturn(true);
-        when(pricingRepository.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(assetConfig()));
-    }
-
-    private TradingAccount account(AccountStatus status, BigDecimal positionLimit) {
-        return new TradingAccount(ACCOUNT_ID, COMPANY_ID, Asset.EUR, status, null, positionLimit, null, 1,
-                OffsetDateTime.now(), OffsetDateTime.now());
-    }
-
-    private AssetConfig assetConfig() {
-        return new AssetConfig(Asset.XAU, new BigDecimal("0.000001"), 6, new BigDecimal("0.002000"), true);
-    }
-
-    private ClientQuote quote(String buy, String sell) {
-        BigDecimal buyPrice = new BigDecimal(buy);
-        BigDecimal sellPrice = new BigDecimal(sell);
-        return new ClientQuote(Asset.XAU, "XAUEUR", new BigDecimal("99.000000"), new BigDecimal("100.000000"),
-                buyPrice, sellPrice, buyPrice, sellPrice,
-                new BigDecimal("0.001000"), new BigDecimal("0.001000"), 1, OffsetDateTime.now());
-    }
-
-    private OrderPreviewRequest request(Asset asset, OrderSide side, String qty, String key) {
-        return new OrderPreviewRequest(asset, side, new BigDecimal(qty), QuantityUnit.OZ, key);
-    }
-
-    private TradingOrder order(long id, long companyId, OrderStatus status, String key, BigDecimal indicativeClientPrice) {
-        return new TradingOrder(id, ACCOUNT_ID, companyId, null, Asset.XAU, "XAUEUR", OrderSide.BUY, OrderType.SPOT,
-                BigDecimal.ONE, QuantityUnit.OZ, BigDecimal.ONE, status,
-                new BigDecimal("100.000000"), indicativeClientPrice, indicativeClientPrice,
-                null, null, null, new BigDecimal("0.001000"), 1, null, null,
-                key, ClientOrderIdFactory.fromIdempotencyKey(key), null, null, null, 0,
-                null, null, null, OffsetDateTime.now(), null, null);
+    @Test void lostConditionalTransitionNeverSends() {
+        when(orders.markPending(123)).thenReturn(0);
+        assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOf(IllegalStateException.class);
+        verify(provider,never()).submitSpotOrder(any());
     }
 }

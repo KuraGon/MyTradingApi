@@ -30,24 +30,29 @@ mvn spring-boot:run     # profil dev, port 8082, contexte /trading-api
 
 **Ne livre jamais du code sans avoir lancé `mvn clean test` et constaté qu'il passe.**
 
-Les tests base de données utilisent Testcontainers et sont **silencieusement ignorés** si Docker n'est pas démarré — le build reste vert alors qu'ils n'ont rien vérifié. Contrôle toujours le nombre de tests exécutés, pas seulement le statut du build.
+Les tests base de données utilisent l'environnement historique autorisé : PostgreSQL `localhost:5432/trading`, utilisateur `trading`, mot de passe exclusivement fourni par `TRADING_DB_PASSWORD`. Aucun Docker/Testcontainers ni nouvelle instance. Les seuls tests DDL de migration créent un schéma temporaire, vérifient explicitement `current_schema()` et ne suppriment que leur propre schéma ; aucune opération destructive dans `public`. Fournisseur et cotations simulés/locaux, AS400 et tâches planifiées désactivés pour les contextes de test. Contrôle toujours le nombre de tests exécutés, les erreurs et les ignorés, pas seulement le statut du build.
 
 ---
 
 ## 3. Invariants métier
 
-### Règle A — couverture par les fonds présents
+### Règle B — capacité pilotée par la Free Equity
+
+La référence détaillée de ce chantier est `../REPRISE_CODEX_RULE_B.md` ; ses décisions Rule B remplacent l'ancienne règle A.
 
 ```
-Achat  : quantité × prix client ≤ fonds disponibles
-         aucun découvert devise, en aucune circonstance
-
-Vente  : part couverte    = min(quantité, métal disponible)     → aucun fonds requis
-         part à découvert = max(0, quantité − métal disponible)
-                            valeur × (1 + taux de marge) ≤ fonds disponibles
+Free Equity disponible = netEquity - marginRequirement - RISK actifs des autres ordres
+BUY  : CASH couvre le pire coût dans l'enveloppe de drift existante
+SELL : aucun nominal CASH réservé, y compris à découvert
 ```
 
-Le « disponible » s'entend toujours **net des réservations actives**.
+`POSITION_CLOSE` attribue exclusivement la fermeture d'une position réelle.
+`RISK` réserve la consommation positive de Free Equity ; il n'est jamais soustrait du cash disponible.
+Les taux proviennent exclusivement de `MarginRateRepository`. Les prix de liquidation client valorisent Risk et Free Equity.
+Les limites historiques restent distinctes : deal au prix client, position aux prix marché bid/ask.
+
+Sous marge, seule une fermeture sans traversée de zéro, améliorant strictement la Free Equity et préservant la devise non négative, est admise.
+Le disponible est net des réservations actives. Les engagements PENDING/PENDING_UNKNOWN restent actifs après le TTL ; seuls les DRAFT expirent automatiquement. Les LEGACY restent comptés conservativement. Tout LEGACY ACTIVE lié à PENDING/PENDING_UNKNOWN bloque une nouvelle admission Rule B sur le compte jusqu'à résolution, même après TTL.
 
 ### Soldes
 

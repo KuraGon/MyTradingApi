@@ -24,7 +24,8 @@ public class ReservationService {
     }
 
     @Transactional
-    public long reserve(long accountId, Asset asset, BigDecimal quantity, long orderId) {
+    public long reserveCash(long accountId, Asset asset, BigDecimal quantity, long orderId) {
+        if (!asset.isCurrency()) throw new IllegalArgumentException("Cash reservation requires currency");
         BigDecimal balance = balances.lockQuantity(accountId, asset);
         BigDecimal alreadyReserved = reservations.activeReserved(accountId, asset);
         BigDecimal available = balance.subtract(alreadyReserved);
@@ -32,7 +33,8 @@ public class ReservationService {
             throw new TradingException(HttpStatus.CONFLICT, "INSUFFICIENT_AVAILABLE_BALANCE",
                     "Solde disponible insuffisant pour réserver " + asset);
         }
-        return reservations.insert(accountId, asset, quantity, orderId, null,
+        return reservations.upsert(accountId, asset, quantity, orderId,
+                ReservationKind.CASH,
                 OffsetDateTime.now().plus(properties.getReservations().getTtl()));
     }
 
@@ -46,5 +48,5 @@ public class ReservationService {
 
     @Scheduled(fixedDelayString = "${trading.reservations.expiry-scan-delay:30s}")
     @Transactional
-    public void expireDue() { reservations.expireDue(); }
+    public void expireDue() { reservations.expireDue(properties.getReservations().getTtl()); }
 }

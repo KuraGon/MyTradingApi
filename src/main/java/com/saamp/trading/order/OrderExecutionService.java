@@ -1,195 +1,210 @@
 package com.saamp.trading.order;
 
-import com.saamp.trading.account.AccountRepository;
-import com.saamp.trading.account.BalanceRepository;
-import com.saamp.trading.account.TradingAccount;
-import com.saamp.trading.common.ClientOrderIdFactory;
-import com.saamp.trading.common.TradingException;
-import com.saamp.trading.common.TroyWeightConverter;
+import com.saamp.trading.account.*;
+import com.saamp.trading.common.*;
+import com.saamp.trading.config.TradingProperties;
 import com.saamp.trading.domain.*;
 import com.saamp.trading.pricing.*;
 import com.saamp.trading.provider.*;
-import com.saamp.trading.reservation.ReservationRepository;
-import com.saamp.trading.reservation.ReservationService;
-import com.saamp.trading.risk.MarginRateRepository;
-import org.springframework.http.HttpStatus;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
+import com.saamp.trading.reservation.*;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.util.Map;
+import java.time.OffsetDateTime;
+import java.util.*;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
-/** Implements the irreversible SPOT workflow with pre-order coverage, persistent reservations and idempotence. */
+/** Sépare l'admission atomique de l'appel externe irréversible. */
 @Service
 public class OrderExecutionService {
-    private static final Logger log = LoggerFactory.getLogger(OrderExecutionService.class);
     private final AccountRepository accounts;
     private final BalanceRepository balances;
     private final PricingRepository pricingRepository;
     private final PricingService pricing;
-    private final ReservationService reservations;
     private final ReservationRepository reservationRepository;
-    private final MarginRateRepository marginRates;
     private final OrderRepository orders;
     private final TradingProvider provider;
     private final ExecutionEventHandler executionEvents;
     private final ExecutionGateRepository gate;
+    private final OrderCapacityService capacity;
+    private final TradingProperties properties;
+    private final TransactionTemplate transactions;
 
+    /**
+     * Réunit le contrôle local et le fournisseur en conservant deux phases séparées.
+     *
+     * @param accounts comptes
+     * @param balances positions
+     * @param pricingRepository configuration
+     *
+     * @param pricing cotations
+     * @param reservationRepository engagements
+     * @param orders ordres
+     *
+     * @param provider fournisseur
+     * @param executionEvents règlements
+     * @param gate autorisation globale
+     *
+     * @param capacity admission B
+     * @param properties échéances
+     * @param transactionManager transactions locales
+     */
     public OrderExecutionService(AccountRepository accounts, BalanceRepository balances, PricingRepository pricingRepository,
-                                 PricingService pricing, ReservationService reservations, ReservationRepository reservationRepository,
-                                 MarginRateRepository marginRates, OrderRepository orders, TradingProvider provider,
-                                 ExecutionEventHandler executionEvents, ExecutionGateRepository gate) {
+                                 PricingService pricing, ReservationRepository reservationRepository, OrderRepository orders,
+                                 TradingProvider provider, ExecutionEventHandler executionEvents, ExecutionGateRepository gate,
+                                 OrderCapacityService capacity, TradingProperties properties, PlatformTransactionManager transactionManager) {
         this.accounts=accounts; this.balances=balances; this.pricingRepository=pricingRepository; this.pricing=pricing;
-        this.reservations=reservations; this.reservationRepository=reservationRepository; this.marginRates=marginRates;
-        this.orders=orders; this.provider=provider; this.executionEvents=executionEvents; this.gate=gate;
+        this.reservationRepository=reservationRepository; this.orders=orders; this.provider=provider;
+        this.executionEvents=executionEvents; this.gate=gate; this.capacity=capacity; this.properties=properties;
+        this.transactions=new TransactionTemplate(transactionManager);
     }
 
-    @Transactional
-    public OrderPreviewResponse preview(long companyId, long userId, OrderPreviewRequest request) {
-        TradingAccount account = accountForCompany(companyId);
+    /**
+     * Prépare un brouillon et ses engagements B avec idempotence persistante.
+     *
+     * @param companyId société
+     * @param userId acteur
+     * @param request demande
+     *
+     * @return prix indicatif et réservations temporaires
+     * @throws TradingException si compte, cotation ou capacité invalide
+     */
+    @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    public OrderPreviewResponse preview(long companyId,long userId,OrderPreviewRequest request) {
+        TradingAccount account=accountForCompany(companyId);
         ensureTradingAllowed(account);
-
-        var existing = orders.findByIdempotencyKey(request.idempotencyKey());
-        if (existing.isPresent()) {
-            TradingOrder o = existing.get();
-            ensureOwnership(o, companyId);
-            return new OrderPreviewResponse(o.id(),o.asset(),o.side(),o.quantityOz(),o.pair(),o.indicativeClientPrice(),o.createdAt(),previewExpiry(o.id()),
-                    BigDecimal.ZERO,BigDecimal.ZERO);
-        }
-
-        BigDecimal qtyOz = TroyWeightConverter.toTroyOunces(request.quantity(), request.unit());
-        AssetConfig config = pricingRepository.findAssetConfig(request.asset())
-                .orElseThrow(() -> new TradingException(HttpStatus.CONFLICT,"ASSET_NOT_CONFIGURED","Actif non configuré"));
-        if (!config.enabled()) throw new TradingException(HttpStatus.CONFLICT,"ASSET_DISABLED","Actif désactivé");
-        if (qtyOz.compareTo(config.minQuantityOz()) < 0) throw new TradingException(HttpStatus.BAD_REQUEST,"QUANTITY_TOO_SMALL","Quantité sous le minimum autorisé");
-
-        ClientQuote quote = pricing.quoteForDisplay(companyId, request.asset(), account.baseCurrency());
-        BigDecimal indicativeClient = request.side()==OrderSide.BUY ? quote.clientBuyPrice() : quote.clientSellPrice();
-        BigDecimal indicativeClientRaw = request.side()==OrderSide.BUY ? quote.clientBuyPriceRaw() : quote.clientSellPriceRaw();
-        BigDecimal indicativeMarket = request.side()==OrderSide.BUY ? quote.marketAsk() : quote.marketBid();
-        BigDecimal notional = qtyOz.multiply(indicativeClient).setScale(2,RoundingMode.CEILING);
-        if (account.dealLimit()!=null && notional.compareTo(account.dealLimit())>0)
-            throw new TradingException(HttpStatus.CONFLICT,"DEAL_LIMIT_EXCEEDED","Plafond par ordre dépassé");
-        if (account.positionLimit()!=null) {
-            BigDecimal projectedGross = projectedGrossPosition(account, request.asset(), request.side(), qtyOz);
-            if (projectedGross.compareTo(account.positionLimit()) > 0)
-                throw new TradingException(HttpStatus.CONFLICT,"POSITION_LIMIT_EXCEEDED","Exposition brute projetée au-dessus de la limite");
-        }
-
-        String clOrdId = ClientOrderIdFactory.fromIdempotencyKey(request.idempotencyKey());
-        BigDecimal appliedSpread = request.side()==OrderSide.BUY ? quote.spreadBuy() : quote.spreadSell();
-        long orderId = orders.insertDraft(account.id(),companyId,request.asset(),quote.pair(),request.side(),request.quantity(),request.unit(),qtyOz,
-                indicativeMarket,indicativeClientRaw,indicativeClient,appliedSpread,quote.spreadConfigVersion(),request.idempotencyKey(),clOrdId);
-        if (orderId < 0) {
-            TradingOrder duplicate = orders.findByIdempotencyKey(request.idempotencyKey()).orElseThrow();
-            ensureOwnership(duplicate, companyId);
-            return new OrderPreviewResponse(duplicate.id(),duplicate.asset(),duplicate.side(),duplicate.quantityOz(),duplicate.pair(),
-                    duplicate.indicativeClientPrice(),duplicate.createdAt(),previewExpiry(duplicate.id()),BigDecimal.ZERO,BigDecimal.ZERO);
-        }
-        log.debug("Created provider correlation ClOrdId {} for order {}", clOrdId, orderId);
-
-        BigDecimal reservedCash = BigDecimal.ZERO;
-        BigDecimal reservedMetal = BigDecimal.ZERO;
-        if (request.side()==OrderSide.BUY) {
-            BigDecimal worstCase = notional.multiply(BigDecimal.ONE.add(config.driftTolerance())).setScale(6,RoundingMode.CEILING);
-            reservations.reserve(account.id(),account.baseCurrency(),worstCase,orderId);
-            reservedCash = worstCase;
-        } else {
-            BigDecimal availableMetal = reservations.available(account.id(),request.asset()).max(BigDecimal.ZERO);
-            BigDecimal covered = qtyOz.min(availableMetal);
-            if (covered.signum()>0) {
-                reservations.reserve(account.id(),request.asset(),covered,orderId);
-                reservedMetal = covered;
+        var existing=orders.findByIdempotencyKey(request.idempotencyKey());
+        if (existing.isPresent()) { ensureOwnership(existing.get(),companyId); return replay(existing.get()); }
+        BigDecimal qty=TroyWeightConverter.toTroyOunces(request.quantity(),request.unit());
+        var quotes=quotes(account,request.asset(),false);
+        var limitQuotes=account.positionLimit()==null?quotes:quotes(account,request.asset(),true);
+        return transactions.execute(status->{
+            var locked=accounts.lockById(account.id()).orElseThrow();
+            ensureTradingAllowed(locked);
+            var duplicate=orders.findByIdempotencyKey(request.idempotencyKey());
+            if (duplicate.isPresent()) { ensureOwnership(duplicate.get(),companyId); return replay(duplicate.get()); }
+            var config=config(request.asset(),qty);
+            var quote=quotes.get(request.asset());
+            boolean buy=request.side()==OrderSide.BUY;
+            BigDecimal indicative=buy?quote.clientBuyPrice():quote.clientSellPrice();
+            long id=orders.insertDraft(locked.id(),companyId,request.asset(),quote.pair(),request.side(),request.quantity(),request.unit(),qty,
+                    buy?quote.marketAsk():quote.marketBid(),buy?quote.clientBuyPriceRaw():quote.clientSellPriceRaw(),indicative,
+                    buy?quote.spreadBuy():quote.spreadSell(),quote.spreadConfigVersion(),request.idempotencyKey(),
+                    ClientOrderIdFactory.fromIdempotencyKey(request.idempotencyKey()));
+            if (id<0) {
+                var other=orders.findByIdempotencyKey(request.idempotencyKey()).orElseThrow();
+                ensureOwnership(other,companyId);
+                return replay(other);
             }
-            BigDecimal uncovered = qtyOz.subtract(covered);
-            if (uncovered.signum()>0) {
-                BigDecimal marginRate = marginRates.currentRate(account.id(), request.asset());
-                BigDecimal required = uncovered.multiply(indicativeClient).multiply(BigDecimal.ONE.add(marginRate)).setScale(6,RoundingMode.CEILING);
-                reservations.reserve(account.id(),account.baseCurrency(),required,orderId);
-                reservedCash = required;
-            }
-        }
-        return new OrderPreviewResponse(orderId,request.asset(),request.side(),qtyOz,quote.pair(),indicativeClient,
-                quote.priceAsOf(),previewExpiry(orderId),reservedCash,reservedMetal);
+            var order=orders.lockById(id).orElseThrow();
+            var expiry=order.createdAt().plus(properties.getReservations().getTtl());
+            var admission=capacity.reserve(locked,order,quotes,limitQuotes,config,expiry,false);
+            return new OrderPreviewResponse(id,request.asset(),request.side(),qty,quote.pair(),indicative,
+                    quote.priceAsOf(),expiry,admission.cash(),admission.close());
+        });
     }
 
-    public TradingOrder submit(long orderId, long companyId, long userId) {
-        TradingOrder order = orders.findById(orderId).orElseThrow(() -> new TradingException(HttpStatus.NOT_FOUND,"ORDER_NOT_FOUND","Ordre introuvable"));
-        ensureOwnership(order,companyId);
-        TradingAccount account = accountForCompany(companyId);
+    /**
+     * Revalide sous verrou et attribue une seule fois le droit d'appeler le fournisseur.
+     *
+     * @param orderId ordre
+     * @param companyId société
+     * @param userId acteur
+     *
+     * @return état persistant après admission ou résultat fournisseur
+     * @throws TradingException si l'ordre ne peut être transmis
+     */
+    @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    public TradingOrder submit(long orderId,long companyId,long userId) {
+        var initial=orders.findById(orderId).orElseThrow(()->failure("ORDER_NOT_FOUND","Ordre introuvable",HttpStatus.NOT_FOUND));
+        ensureOwnership(initial,companyId);
+        var account=accountForCompany(companyId);
         ensureTradingAllowed(account);
-        if (!gate.isOpen()) throw new TradingException(HttpStatus.SERVICE_UNAVAILABLE,"EXECUTION_BLOCKED","Nouvelles transmissions bloquées par la réconciliation");
-        if (!provider.supportsSpotOrderSubmission())
-            throw new TradingException(HttpStatus.SERVICE_UNAVAILABLE,"PROVIDER_EXECUTION_NOT_READY","Transmission SPOT désactivée tant que le contrat /Trade n'est pas validé en UAT");
-        if (order.status()==OrderStatus.FILLED || order.status()==OrderStatus.PENDING || order.status()==OrderStatus.PENDING_UNKNOWN) return order;
-        if (order.status()!=OrderStatus.DRAFT) throw new TradingException(HttpStatus.CONFLICT,"ORDER_NOT_SUBMITTABLE","Ordre non transmissible dans cet état");
-        if (!reservationRepository.hasActiveForOrder(orderId)) {
-            orders.markExpired(orderId);
-            throw new TradingException(HttpStatus.CONFLICT,"RESERVATION_EXPIRED","Réservation expirée, nouvelle cotation requise");
-        }
-
-        ClientQuote fresh = pricing.quoteForExecution(companyId, order.asset(), account.baseCurrency());
-        AssetConfig config = pricingRepository.findAssetConfig(order.asset()).orElseThrow();
-        BigDecimal freshClient = order.side()==OrderSide.BUY ? fresh.clientBuyPrice() : fresh.clientSellPrice();
-        BigDecimal drift = PriceMath.driftRatio(order.indicativeClientPrice(),freshClient);
-        if (drift.compareTo(config.driftTolerance())>0) {
-            orders.markRejected(orderId,"PRICE_MOVED","Le prix a dépassé la tolérance de dérive");
-            reservations.releaseForOrder(orderId);
-            throw new TradingException(HttpStatus.CONFLICT,"PRICE_MOVED","Le prix a évolué au-delà de la tolérance; nouvelle cotation requise",
-                    Map.of("currentClientPrice", freshClient, "priceAsOf", fresh.priceAsOf(), "pair", fresh.pair()));
-        }
-
-        orders.markPending(orderId);
+        if (!gate.isOpen()) throw failure("EXECUTION_BLOCKED","Nouvelles transmissions bloquées",HttpStatus.SERVICE_UNAVAILABLE);
+        if (!provider.supportsSpotOrderSubmission()) throw failure("PROVIDER_EXECUTION_NOT_READY","Transmission SPOT désactivée",HttpStatus.SERVICE_UNAVAILABLE);
+        if (transmitted(initial)) return initial;
+        if (initial.status()!=OrderStatus.DRAFT) throw failure("ORDER_NOT_SUBMITTABLE","Ordre non transmissible",HttpStatus.CONFLICT);
+        var quotes=quotes(account,initial.asset(),true);
+        var admitted=transactions.execute(status->{
+            var lockedAccount=accounts.lockById(account.id()).orElseThrow();
+            var order=orders.lockById(orderId).orElseThrow();
+            ensureOwnership(order,companyId);
+            ensureTradingAllowed(lockedAccount);
+            if (transmitted(order)) return new Submission(order,lockedAccount,false,null);
+            if (order.status()!=OrderStatus.DRAFT) throw failure("ORDER_NOT_SUBMITTABLE","Ordre non transmissible",HttpStatus.CONFLICT);
+            var expiry=expiry(order);
+            if (!expiry.isAfter(OffsetDateTime.now())) {
+                orders.markExpired(orderId);
+                reservationRepository.expireForOrder(orderId);
+                return new Submission(order,lockedAccount,false,failure("RESERVATION_EXPIRED","Nouvelle cotation requise",HttpStatus.CONFLICT));
+            }
+            var config=config(order.asset(),order.quantityOz());
+            var fresh=quotes.get(order.asset());
+            BigDecimal price=order.side()==OrderSide.BUY?fresh.clientBuyPrice():fresh.clientSellPrice();
+            if (PriceMath.driftRatio(order.indicativeClientPrice(),price).compareTo(config.driftTolerance())>0) {
+                orders.markRejected(orderId,"PRICE_MOVED","Le prix a dépassé la tolérance de dérive");
+                reservationRepository.releaseForOrder(orderId);
+                return new Submission(order,lockedAccount,false,new TradingException(HttpStatus.CONFLICT,"PRICE_MOVED",
+                        "Nouvelle cotation requise",Map.of("currentClientPrice",price,"priceAsOf",fresh.priceAsOf(),"pair",fresh.pair())));
+            }
+            capacity.reserve(lockedAccount,order,quotes,config,expiry,true);
+            if (orders.markPending(orderId)!=1) throw new IllegalStateException("Concurrent order transition");
+            return new Submission(order,lockedAccount,true,null);
+        });
+        if (admitted.error()!=null) throw admitted.error();
+        if (!admitted.send()) return admitted.order();
+        // La transaction locale est commitée avant cet appel irréversible.
         OrderAcknowledgement ack;
         try {
-            log.info("Submitting SPOT order {} with ClOrdId {} to {}", orderId, order.clOrdId(), provider.sourceName());
-            ack = provider.submitSpotOrder(new SpotOrderRequest(order.clOrdId(),order.pair(),order.side(),order.quantityOz()));
-        } catch (RuntimeException providerFailure) {
-            log.warn("Provider submission outcome unknown for order {} / ClOrdId {} ({})",
-                    orderId, order.clOrdId(), providerFailure.getClass().getSimpleName());
-            orders.markPendingUnknown(orderId,"PROVIDER_UNCERTAIN",providerFailure.getMessage());
+            ack=provider.submitSpotOrder(new SpotOrderRequest(admitted.order().clOrdId(),admitted.order().pair(),
+                    admitted.order().side(),admitted.order().quantityOz()));
+        } catch (RuntimeException uncertain) {
+            orders.markPendingUnknown(orderId,"PROVIDER_UNCERTAIN",uncertain.getClass().getSimpleName());
             return orders.findById(orderId).orElseThrow();
         }
-        log.info("Provider acknowledgement {} for order {} / ClOrdId {}", ack.state(), orderId, order.clOrdId());
-        if (ack.state()==AcknowledgementState.IN_PROCESS) {
-            orders.markPendingUnknown(orderId,"IN_PROCESS",ack.errorMessage());
-        } else if (ack.state()==AcknowledgementState.REJECTED) {
-            orders.markRejected(orderId,ack.errorCode(),ack.errorMessage());
-            reservations.releaseForOrder(orderId);
-        } else {
-            executionEvents.handleFilled(order, account, ack.executionId(), ack.rate(), fresh, "user:" + userId);
-        }
+        if (ack.state()==AcknowledgementState.IN_PROCESS) orders.markPendingUnknown(orderId,"IN_PROCESS",ack.errorMessage());
+        else if (ack.state()==AcknowledgementState.REJECTED) executionEvents.handleRejected(admitted.order(),ack.errorCode(),ack.errorMessage());
+        else executionEvents.handleFilled(admitted.order(),admitted.account(),ack.executionId(),ack.rate(),quotes.get(initial.asset()),"user:"+userId);
         return orders.findById(orderId).orElseThrow();
     }
 
-    private BigDecimal projectedGrossPosition(TradingAccount account, Asset tradedAsset, OrderSide side, BigDecimal quantityOz) {
-        BigDecimal gross = BigDecimal.ZERO;
-        for (Asset metal : Asset.metals()) {
-            BigDecimal quantity = balances.find(account.id(), metal).map(b -> b.quantity()).orElse(BigDecimal.ZERO);
-            if (metal == tradedAsset) quantity = quantity.add(side == OrderSide.BUY ? quantityOz : quantityOz.negate());
-            if (quantity.signum() == 0) continue;
-            ClientQuote q = pricing.quoteForExecution(account.companyId(), metal, account.baseCurrency());
-            BigDecimal mark = quantity.signum() >= 0 ? q.marketBid() : q.marketAsk();
-            gross = gross.add(quantity.multiply(mark).abs());
-        }
-        return gross.setScale(2, RoundingMode.HALF_UP);
+    private Map<Asset,ClientQuote> quotes(TradingAccount account,Asset traded,boolean execution) {
+        var assets=EnumSet.of(traded);
+        for (var balance:balances.findAll(account.id()))
+            if (balance.asset().isMetal() && balance.quantity().signum()!=0) assets.add(balance.asset());
+        for (var commitment:reservationRepository.activeCloseCommitments(account.id(),-1))
+            if (commitment.transmitted()) assets.add(commitment.asset());
+        var result=new EnumMap<Asset,ClientQuote>(Asset.class);
+        for (var asset:assets) result.put(asset,execution?pricing.quoteForExecution(account.companyId(),asset,account.baseCurrency())
+                :pricing.quoteForDisplay(account.companyId(),asset,account.baseCurrency()));
+        return result;
     }
-
+    private AssetConfig config(Asset asset,BigDecimal quantity) {
+        var config=pricingRepository.findAssetConfig(asset).orElseThrow(()->failure("ASSET_NOT_CONFIGURED","Actif non configuré",HttpStatus.CONFLICT));
+        if (!config.enabled()) throw failure("ASSET_DISABLED","Actif désactivé",HttpStatus.CONFLICT);
+        if (quantity.compareTo(config.minQuantityOz())<0) throw failure("QUANTITY_TOO_SMALL","Quantité sous le minimum",HttpStatus.BAD_REQUEST);
+        return config;
+    }
+    private OrderPreviewResponse replay(TradingOrder order) {
+        return new OrderPreviewResponse(order.id(),order.asset(),order.side(),order.quantityOz(),order.pair(),
+                order.indicativeClientPrice(),order.createdAt(),expiry(order),BigDecimal.ZERO,BigDecimal.ZERO);
+    }
+    private OffsetDateTime expiry(TradingOrder order) {
+        return reservationRepository.findEarliestExpiryForOrder(order.id()).orElse(order.createdAt().plus(properties.getReservations().getTtl()));
+    }
+    private boolean transmitted(TradingOrder order) {
+        return order.status()==OrderStatus.PENDING || order.status()==OrderStatus.PENDING_UNKNOWN || order.status()==OrderStatus.FILLED;
+    }
     private TradingAccount accountForCompany(long companyId) {
-        return accounts.findByCompanyId(companyId).orElseThrow(() -> new TradingException(HttpStatus.NOT_FOUND,"TRADING_ACCOUNT_NOT_FOUND","Compte Trading absent"));
-    }
-    private java.time.OffsetDateTime previewExpiry(long orderId) {
-        return reservationRepository.findEarliestExpiryForOrder(orderId)
-                .orElseThrow(() -> new IllegalStateException("Order preview has no persisted reservation expiry"));
+        return accounts.findByCompanyId(companyId).orElseThrow(()->failure("TRADING_ACCOUNT_NOT_FOUND","Compte Trading absent",HttpStatus.NOT_FOUND));
     }
     private void ensureTradingAllowed(TradingAccount account) {
-        if (account.status()!=AccountStatus.ACTIVE)
-            throw new TradingException(HttpStatus.CONFLICT,"ACCOUNT_NOT_ACTIVE","Compte Trading non actif: "+account.status());
+        if (account.status()!=AccountStatus.ACTIVE) throw failure("ACCOUNT_NOT_ACTIVE","Compte Trading non actif",HttpStatus.CONFLICT);
     }
     private void ensureOwnership(TradingOrder order,long companyId) {
-        if (order.companyId()!=companyId) throw new TradingException(HttpStatus.NOT_FOUND,"ORDER_NOT_FOUND","Ordre introuvable");
+        if (order.companyId()!=companyId) throw failure("ORDER_NOT_FOUND","Ordre introuvable",HttpStatus.NOT_FOUND);
     }
+    private static TradingException failure(String code,String message,HttpStatus status) { return new TradingException(status,code,message); }
+    private record Submission(TradingOrder order,TradingAccount account,boolean send,TradingException error) { }
 }

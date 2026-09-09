@@ -32,6 +32,14 @@ public class OrderRepository {
     }
 
     public Optional<TradingOrder> findById(long id) { return jdbc.query("SELECT * FROM trading_order WHERE id=?", this::map, id).stream().findFirst(); }
+    /**
+     * Relit un ordre après le verrou compte pour rendre admission et règlement exclusifs.
+     * @param id ordre à verrouiller
+     * @return ordre courant, ou vide
+     */
+    public Optional<TradingOrder> lockById(long id) {
+        return jdbc.query("SELECT * FROM trading_order WHERE id=? FOR UPDATE", this::map, id).stream().findFirst();
+    }
     public Optional<TradingOrder> findByIdempotencyKey(String key) { return jdbc.query("SELECT * FROM trading_order WHERE idempotency_key=?", this::map, key).stream().findFirst(); }
     public List<TradingOrder> findPage(long accountId, Long cursor, int limit) {
         if (cursor == null) {
@@ -44,9 +52,14 @@ public class OrderRepository {
         return jdbc.query("SELECT * FROM trading_order WHERE id=? AND account_id=?", this::map, id, accountId).stream().findFirst();
     }
 
-    public void markPending(long id) { jdbc.update("UPDATE trading_order SET status='PENDING', submitted_at=NOW() WHERE id=?", id); }
+    /**
+     * Attribue une seule fois le droit de transmettre le brouillon.
+     * @param id ordre admis sous verrou
+     * @return nombre de transitions effectuées, nécessairement un pour transmettre
+     */
+    public int markPending(long id) { return jdbc.update("UPDATE trading_order SET status='PENDING', submitted_at=NOW() WHERE id=? AND status='DRAFT'", id); }
     public void markPendingUnknown(long id, String code, String message) {
-        jdbc.update("UPDATE trading_order SET status='PENDING_UNKNOWN',submitted_at=COALESCE(submitted_at,NOW()),stonex_error_code=?,stonex_error_message=?,unknown_since=COALESCE(unknown_since,NOW()),resolution_attempts=0,next_resolution_at=NOW()+INTERVAL '2 seconds' WHERE id=?", code,message,id);
+        jdbc.update("UPDATE trading_order SET status='PENDING_UNKNOWN',submitted_at=COALESCE(submitted_at,NOW()),stonex_error_code=?,stonex_error_message=?,unknown_since=COALESCE(unknown_since,NOW()),resolution_attempts=0,next_resolution_at=NOW()+INTERVAL '2 seconds' WHERE id=? AND status IN ('PENDING','PENDING_UNKNOWN')", code,message,id);
     }
 
     public void scheduleNextResolution(long id, int attempts, java.time.OffsetDateTime next, boolean manualReview) {

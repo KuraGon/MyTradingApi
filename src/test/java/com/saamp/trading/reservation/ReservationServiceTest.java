@@ -26,11 +26,11 @@ class ReservationServiceTest {
         when(balances.lockQuantity(1L, Asset.EUR)).thenReturn(new BigDecimal("100.000000"));
         when(repository.activeReserved(1L, Asset.EUR)).thenReturn(new BigDecimal("20.000000"));
 
-        assertThatThrownBy(() -> service.reserve(1L, Asset.EUR, new BigDecimal("80.000001"), 10L))
+        assertThatThrownBy(() -> service.reserveCash(1L, Asset.EUR, new BigDecimal("80.000001"), 10L))
                 .isInstanceOfSatisfying(TradingException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo("INSUFFICIENT_AVAILABLE_BALANCE"));
 
-        verify(repository, never()).insert(anyLong(), any(), any(), any(), any(), any());
+        verify(repository, never()).upsert(anyLong(), any(), any(), anyLong(), any(), any());
         assertThat(new BigDecimal("100.000000").subtract(new BigDecimal("20.000000")))
                 .isEqualByComparingTo("80.000000");
     }

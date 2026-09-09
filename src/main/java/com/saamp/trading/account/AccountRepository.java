@@ -23,6 +23,15 @@ public class AccountRepository {
         return jdbc.query("SELECT * FROM trading_account WHERE id = ?", this::map, id).stream().findFirst();
     }
 
+    /**
+     * Sérialise les décisions de capacité et les règlements d'un compte.
+     * @param id compte à verrouiller avant tout ordre ou solde
+     * @return compte relu sous verrou, ou vide s'il est absent
+     */
+    public Optional<TradingAccount> lockById(long id) {
+        return jdbc.query("SELECT * FROM trading_account WHERE id=? FOR UPDATE", this::map, id).stream().findFirst();
+    }
+
     private TradingAccount map(ResultSet rs, int rowNum) throws SQLException {
         return new TradingAccount(
                 rs.getLong("id"), rs.getLong("company_id"), Asset.valueOf(rs.getString("base_currency")),

@@ -28,12 +28,15 @@ class ExecutionEventHandlerTest {
     @Mock LedgerService ledger;
     @Mock OrderRepository orders;
     @Mock ReservationService reservations;
+    @Mock com.saamp.trading.account.AccountRepository accounts;
 
     private ExecutionEventHandler handler;
 
     @BeforeEach
     void setUp() {
-        handler = new ExecutionEventHandler(pricing, ledger, orders, reservations);
+        handler = new ExecutionEventHandler(pricing, ledger, orders, reservations, accounts);
+        when(accounts.lockById(5L)).thenReturn(Optional.of(account()));
+        when(orders.lockById(10L)).thenReturn(Optional.of(order()));
     }
 
     @Test

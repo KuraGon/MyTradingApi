@@ -19,8 +19,24 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /** Vérifie sur PostgreSQL que l'indisponibilité AS400 ne défait jamais un dénouement commité. */
-@SpringBootTest(properties="trading.as400.enabled=false")
+@SpringBootTest(properties={
+        "spring.datasource.url=jdbc:postgresql://localhost:5432/trading",
+        "spring.datasource.username=trading",
+        "spring.datasource.password=${TRADING_DB_PASSWORD}",
+        "spring.liquibase.url=jdbc:postgresql://localhost:5432/trading",
+        "spring.liquibase.user=trading",
+        "spring.liquibase.password=${TRADING_DB_PASSWORD}",
+        "trading.provider.mode=SIMULATED",
+        "trading.as400.enabled=false",
+        "trading.as400.jdbc-url=",
+        "trading.reconciliation.enabled=false"
+})
 class As400FilledIsolationIntegrationTest {
+    // Empêche tout batch automatique de modifier l'environnement local pendant ces scénarios explicites.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean(
+            name="org.springframework.context.annotation.internalScheduledAnnotationProcessor")
+    org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor scheduling;
+
     @Autowired JdbcTemplate jdbc;
     @Autowired LedgerService ledger;
     @Autowired As400SyncOutboxRepository outbox;

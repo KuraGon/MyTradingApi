@@ -1,6 +1,8 @@
 package com.saamp.trading.order;
 
 import com.saamp.trading.account.TradingAccount;
+import com.saamp.trading.account.AccountRepository;
+import com.saamp.trading.domain.OrderStatus;
 import com.saamp.trading.domain.OrderSide;
 import com.saamp.trading.ledger.LedgerService;
 import com.saamp.trading.pricing.AssetConfig;
@@ -15,8 +17,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 /**
- * Inbound execution event handler. Provider calls and DB settlement are intentionally separated:
- * no database transaction is held open while an irreversible external trade is being submitted.
+ * Règle une exécution une seule fois sous les verrous du compte et de son ordre.
+ * La transaction comptable reste distincte de la transmission irréversible.
  */
 @Service
 public class ExecutionEventHandler {
@@ -24,18 +26,42 @@ public class ExecutionEventHandler {
     private final LedgerService ledger;
     private final OrderRepository orders;
     private final ReservationService reservations;
+    private final AccountRepository accounts;
 
+    /**
+     * @param pricing prix publiés
+     * @param ledger comptabilité atomique
+     * @param orders états persistants
+     * @param reservations engagements à solder
+     * @param accounts verrou commun de capacité
+     */
     public ExecutionEventHandler(PricingRepository pricing, LedgerService ledger, OrderRepository orders,
-                                 ReservationService reservations) {
+                                 ReservationService reservations, AccountRepository accounts) {
         this.pricing = pricing;
         this.ledger = ledger;
         this.orders = orders;
         this.reservations = reservations;
+        this.accounts = accounts;
     }
 
+    /**
+     * Rend le règlement idempotent et atomique même lorsque plusieurs résolutions arrivent ensemble.
+     * @param order ordre dont l'identité permet la relecture verrouillée
+     * @param account compte indicatif, relu sous le verrou commun
+     * @param executionId référence de l'exécution fournisseur
+     * @param marketRate prix effectivement exécuté
+     * @param quoteAtSubmission spreads client associés à la transmission
+     * @param actor origine de l'écriture comptable
+     * @throws IllegalStateException si l'ordre n'a pas été transmis
+     */
     @Transactional
     public void handleFilled(TradingOrder order, TradingAccount account, String executionId,
                              BigDecimal marketRate, ClientQuote quoteAtSubmission, String actor) {
+        account = accounts.lockById(order.accountId()).orElseThrow();
+        order = orders.lockById(order.id()).orElseThrow();
+        if (order.status()==OrderStatus.FILLED) return;
+        if (order.status()!=OrderStatus.PENDING && order.status()!=OrderStatus.PENDING_UNKNOWN)
+            throw new IllegalStateException("Execution requires a submitted order");
         BigDecimal spread = order.side() == OrderSide.BUY ? quoteAtSubmission.spreadBuy() : quoteAtSubmission.spreadSell();
         AssetConfig config = pricing.findAssetConfig(order.asset()).orElseThrow();
         BigDecimal clientPriceRaw = PriceMath.rawClientPrice(marketRate, spread, order.side());
@@ -51,8 +77,20 @@ public class ExecutionEventHandler {
         reservations.consumeForOrder(order.id());
     }
 
+    /**
+     * Libère les engagements dans la même transaction que le rejet confirmé, sans défaire un FILLED.
+     * @param order ordre à relire sous verrou
+     * @param errorCode code de rejet confirmé
+     * @param errorMessage explication du rejet
+     * @throws IllegalStateException si l'ordre n'a pas été transmis
+     */
     @Transactional
     public void handleRejected(TradingOrder order, String errorCode, String errorMessage) {
+        accounts.lockById(order.accountId()).orElseThrow();
+        order = orders.lockById(order.id()).orElseThrow();
+        if (order.status()==OrderStatus.FILLED || order.status()==OrderStatus.REJECTED) return;
+        if (order.status()!=OrderStatus.PENDING && order.status()!=OrderStatus.PENDING_UNKNOWN)
+            throw new IllegalStateException("Rejection requires a submitted order");
         orders.markRejected(order.id(), errorCode, errorMessage);
         reservations.releaseForOrder(order.id());
     }
