@@ -42,8 +42,11 @@ public final class RiskMonitorMailWorker {
                 helper.setTo(config.smtp().recipients().toArray(String[]::new));
                 helper.setSubject("MyTrading Risk Monitor — "+event.level());
                 helper.setText("événement : "+event.id()+"\nCompte : "+event.accountId()+"\nNiveau : "+event.level()
-                        +"\nCalcul : "+event.createdAt()+"\nPrix de référence : "+event.priceAsOf()
-                        +"\nMotif : "+event.reason()+"\nIndicateurs : "+event.indicators()
+                        +"\nCalcul : "+event.createdAt()+"\nPrix de référence : "+(event.priceAsOf()==null ? "Non disponible" : event.priceAsOf())
+                        +"\nMotif : "+(event.reason()==null ? "Non disponible" : event.reason())
+                        +"\nIndicateurs : "+(event.indicators()!=null ? event.indicators()
+                            : event.level()==RiskMonitorPolicy.Level.PRICE_STALE
+                                ? "Non disponibles — prix de marché obsolète" : "Non disponibles")
                         +"\nAucune liquidation automatique. Une analyse humaine est nécessaire.");
                 String address=new jakarta.mail.internet.InternetAddress(config.smtp().from()).getAddress();
                 String domain=address.substring(address.lastIndexOf('@')+1);
