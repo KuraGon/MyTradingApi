@@ -55,19 +55,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /** Vérifie le parcours Trading V1 complet avec PostgreSQL locale et le fournisseur simulé. */
 @SpringBootTest(properties={
-        "spring.datasource.url=jdbc:postgresql://localhost:5432/trading",
-        "spring.datasource.username=trading",
-        "spring.datasource.password=${TRADING_DB_PASSWORD}",
-        "spring.liquibase.url=jdbc:postgresql://localhost:5432/trading",
-        "spring.liquibase.user=trading",
-        "spring.liquibase.password=${TRADING_DB_PASSWORD}",
         "trading.provider.mode=SIMULATED",
         "trading.as400.enabled=false",
         "trading.as400.jdbc-url=",
         "trading.reconciliation.enabled=false"
 })
 @AutoConfigureMockMvc
-@Import(SimulatedTradingEndToEndTest.ProviderConfiguration.class)
+@Import({SimulatedTradingEndToEndTest.ProviderConfiguration.class,com.saamp.trading.support.LocalPostgres.Context.class})
 class SimulatedTradingEndToEndTest {
     // Empêche tout batch automatique de modifier l'environnement local pendant ces scénarios explicites.
     @org.springframework.test.context.bean.override.mockito.MockitoBean(

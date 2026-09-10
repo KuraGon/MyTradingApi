@@ -45,7 +45,7 @@ public final class RiskCalculator {
             marginRequirement = marginRequirement.add(absoluteValuation.multiply(position.marginRate()));
         }
 
-        return summarize(totalFunds, positionValuation, marginRequirement, grossPosition);
+        return summarize(totalFunds, positionValuation, marginRequirement, grossPosition).published();
     }
 
     /**
@@ -56,6 +56,17 @@ public final class RiskCalculator {
      * @throws IllegalArgumentException si les fonds ou les positions sont absents
      */
     public static RiskResult calculateAccountPositions(BigDecimal totalFunds, Collection<AccountPosition> positions) {
+        return evaluateAccountPositions(totalFunds, positions).published();
+    }
+
+    /**
+     * Expose la précision de décision sans reproduire la formule ni changer les DTO publiés.
+     * @param totalFunds fonds du compte
+     * @param positions lignes client déjà arrondies
+     * @return calcul unique et sa publication
+     * @throws IllegalArgumentException si les entrées sont absentes
+     */
+    public static Evaluation evaluateAccountPositions(BigDecimal totalFunds, Collection<AccountPosition> positions) {
         if (totalFunds == null || positions == null) {
             throw new IllegalArgumentException("totalFunds and positions are required");
         }
@@ -70,7 +81,7 @@ public final class RiskCalculator {
         return summarize(totalFunds, valuation, margin, gross);
     }
 
-    private static RiskResult summarize(BigDecimal totalFunds, BigDecimal positionValuation,
+    private static Evaluation summarize(BigDecimal totalFunds, BigDecimal positionValuation,
                                         BigDecimal marginRequirement, BigDecimal grossPosition) {
         // StoneX publishes and reuses monetary aggregates at 2 decimals.
         // Round each published aggregate before feeding the next calculation so the
@@ -101,7 +112,7 @@ public final class RiskCalculator {
             }
         }
 
-        return new RiskResult(
+        return new Evaluation(new RiskResult(
                 publishedTotalFunds,
                 publishedPositionValuation,
                 netEquity,
@@ -109,6 +120,12 @@ public final class RiskCalculator {
                 freeEquity,
                 publishedGrossPosition,
                 coveragePct.setScale(2, RoundingMode.HALF_UP),
-                status);
+                status), publishedGrossPosition.signum() == 0 ? null : coveragePct);
     }
+
+    /** Résultat interne : le pourcentage de décision est absent lorsque l'exposition brute est nulle.
+     * @param published résultat historique inchangé
+     * @param coverageBeforeDisplay couverture avant arrondi d'affichage
+     */
+    public record Evaluation(RiskResult published, BigDecimal coverageBeforeDisplay) { }
 }

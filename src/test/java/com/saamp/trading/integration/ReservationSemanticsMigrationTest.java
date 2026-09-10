@@ -8,7 +8,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import static org.assertj.core.api.Assertions.*;
 
-/** Vérifie la bascule 010 vers 011 sans modifier les changesets ni les engagements historiques. */
+/** VÃ©rifie la bascule 010 vers 011 sans modifier les changesets ni les engagements historiques. */
 class ReservationSemanticsMigrationTest {
     @Test void backfillPreservesPendingCommitmentsAndAddsExplicitUniqueKinds() throws Exception {
         try (var fixture=new Schema()) {
@@ -55,10 +55,10 @@ class ReservationSemanticsMigrationTest {
         }
     }
 
-    @Test void completeInstallationUsesTheRealMasterThrough012() throws Exception {
+    @Test void completeInstallationUsesTheRealMasterThrough013() throws Exception {
         try (var fixture=new Schema()) {
             migrate(fixture.source,fixture.name,"db.changelog-master.yaml");
-            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(12);
+            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(13);
             assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=? AND table_name='trading_reservation' AND column_name='reservation_kind' AND is_nullable='NO'",Integer.class,fixture.name)).isEqualTo(1);
         }
     }
@@ -107,35 +107,34 @@ class ReservationSemanticsMigrationTest {
                 new liquibase.database.jvm.JdbcConnection(connection));
         database.setDefaultSchemaName(schema);
         database.setLiquibaseSchemaName(schema);
-        // Le master réel est lu ; le compteur borne exactement la transition historique testée.
+        // Le master rÃ©el est lu ; le compteur borne exactement la transition historique testÃ©e.
         var runner=new liquibase.Liquibase("db/changelog/db.changelog-master.yaml",
                 new liquibase.resource.ClassLoaderResourceAccessor(),database);
         runner.update(count,new liquibase.Contexts(),new liquibase.LabelExpression());
-        // Les fixtures historiques doivent être validées avant le prochain passage Liquibase.
+        // Les fixtures historiques doivent Ãªtre validÃ©es avant le prochain passage Liquibase.
         connection.setAutoCommit(true);
         verifySchema(new JdbcTemplate(new SingleConnectionDataSource(connection,true)),schema);
     }
 
     private static final class Schema implements AutoCloseable {
-        final String name="reservation_011_"+UUID.randomUUID().toString().replace("-","");
-        final java.sql.Connection connection=LocalPostgres.connection();
+        final String name=LocalPostgres.createSchema();
+        final java.sql.Connection connection=LocalPostgres.dataSource(name).getConnection();
         final SingleConnectionDataSource source=new SingleConnectionDataSource(connection,true);
         final JdbcTemplate jdbc=new JdbcTemplate(source);
         Schema() throws Exception {
-            jdbc.execute("CREATE SCHEMA "+name);
             connection.setSchema(name);
             verifySchema(jdbc,name);
         }
         @Override public void close() throws Exception {
             try {
                 verifySchema(jdbc,name);
-                jdbc.execute("DROP SCHEMA "+name+" CASCADE");
+                LocalPostgres.dropSchema(name);
             } finally { connection.close(); }
         }
     }
 
     private static void verifySchema(JdbcTemplate jdbc,String schema) {
-        assertThat(schema).matches("reservation_011_[a-f0-9]{32}");
+        assertThat(schema).matches("saamp_test_[a-f0-9]{32}");
         assertThat(jdbc.queryForObject("SELECT current_schema()",String.class)).isEqualTo(schema).isNotEqualTo("public");
     }
 

@@ -489,6 +489,8 @@ class TradingDatabaseInvariantTest {
         SpringLiquibase liquibase(DataSource dataSource) {
             SpringLiquibase liquibase = new SpringLiquibase();
             liquibase.setDataSource(dataSource);
+            liquibase.setDefaultSchema(com.saamp.trading.support.LocalPostgres.schema());
+            liquibase.setLiquibaseSchema(com.saamp.trading.support.LocalPostgres.schema());
             liquibase.setChangeLog("classpath:db/changelog/db.changelog-master.yaml");
             return liquibase;
         }

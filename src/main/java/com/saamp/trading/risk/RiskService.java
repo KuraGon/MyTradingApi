@@ -14,6 +14,22 @@ import java.util.Comparator;
 /** Calcule le risque du compte sur les mêmes liquidations client que la consultation des positions. */
 @Service
 public class RiskService {
+    /**
+     * Partage le calcul des positions acquises sans écrire un snapshot prématuré.
+     * @param account compte observé
+     * @param balanceSnapshot soldes observés
+     * @param quotes cotations acquises avant la transaction de décision
+     * @param rates taux issus du repository de marge
+     * @return calcul unique conservant sa précision de décision
+     */
+    public RiskCalculator.Evaluation evaluate(TradingAccount account,
+            java.util.List<com.saamp.trading.account.Balance> balanceSnapshot,
+            java.util.Map<com.saamp.trading.domain.Asset, com.saamp.trading.pricing.ClientQuote> quotes,
+            java.util.Map<com.saamp.trading.domain.Asset, BigDecimal> rates) {
+        BigDecimal funds = balanceSnapshot.stream().filter(b -> b.asset() == account.baseCurrency())
+                .map(com.saamp.trading.account.Balance::quantity).reduce(BigDecimal.ZERO, BigDecimal::add);
+        return RiskCalculator.evaluateAccountPositions(funds, positions.value(account, balanceSnapshot, quotes::get, rates::get));
+    }
     private final BalanceRepository balances;
     private final PositionService positions;
     private final RiskSnapshotRepository snapshots;

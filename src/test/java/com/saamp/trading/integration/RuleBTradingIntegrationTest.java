@@ -29,13 +29,8 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 
 /** Exerce l'admission et les règlements concurrents sur PostgreSQL réel. */
+@org.springframework.context.annotation.Import(com.saamp.trading.support.LocalPostgres.Context.class)
 @SpringBootTest(properties={
-        "spring.datasource.url=jdbc:postgresql://localhost:5432/trading",
-        "spring.datasource.username=trading",
-        "spring.datasource.password=${TRADING_DB_PASSWORD}",
-        "spring.liquibase.url=jdbc:postgresql://localhost:5432/trading",
-        "spring.liquibase.user=trading",
-        "spring.liquibase.password=${TRADING_DB_PASSWORD}",
         "trading.provider.mode=SIMULATED",
         "trading.as400.enabled=false",
         "trading.as400.jdbc-url=",

@@ -51,15 +51,31 @@ public class PositionService {
      * @throws com.saamp.trading.common.TradingException si un prix ou un taux requis est indisponible
      */
     public List<AccountPosition> value(TradingAccount account, List<Balance> balanceSnapshot) {
+        return value(account, balanceSnapshot,
+                asset -> pricing.quoteForDisplay(account.companyId(), asset, account.baseCurrency()),
+                asset -> marginRates.currentRate(account.id(), asset));
+    }
+
+    /**
+     * Réutilise exactement la valorisation existante avec des paramètres acquis hors verrou.
+     * @param account compte valorisé
+     * @param balanceSnapshot soldes observés
+     * @param quotes cotations déjà acquises
+     * @param rates taux déjà lus depuis MarginRateRepository
+     * @return lignes monétaires publiées
+     */
+    public List<AccountPosition> value(TradingAccount account, List<Balance> balanceSnapshot,
+            java.util.function.Function<com.saamp.trading.domain.Asset, com.saamp.trading.pricing.ClientQuote> quotes,
+            java.util.function.Function<com.saamp.trading.domain.Asset, BigDecimal> rates) {
         return balanceSnapshot.stream()
                 .filter(balance -> balance.asset().isMetal() && balance.quantity().signum() != 0)
                 .map(balance -> {
-                    var quote = pricing.quoteForDisplay(account.companyId(), balance.asset(), account.baseCurrency());
+                    var quote = quotes.apply(balance.asset());
                     var clientPrice = balance.quantity().signum() > 0
                             ? quote.clientSellPrice()
                             : quote.clientBuyPrice();
                     var valuation = balance.quantity().multiply(clientPrice).setScale(2, RoundingMode.HALF_UP);
-                    var marginRate = marginRates.currentRate(account.id(), balance.asset());
+                    var marginRate = rates.apply(balance.asset());
                     var marginRequirement = valuation.abs().multiply(marginRate).setScale(2, RoundingMode.HALF_UP);
                     var marginRatePct = marginRate.multiply(new BigDecimal("100")).setScale(2, RoundingMode.HALF_UP);
                     return new AccountPosition(balance.asset(), balance.quantity(), clientPrice, valuation,

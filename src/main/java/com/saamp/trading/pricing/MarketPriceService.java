@@ -27,9 +27,20 @@ public class MarketPriceService {
     }
 
     public MarketPrice requireFreshForDisplay(String pair) {
+        return requireFresh(pair, properties.getPricing().getDisplayMaxAge());
+    }
+
+    /**
+     * Applique une limite de fraîcheur dédiée sans changer celles de l'admission ou de l'affichage.
+     * @param pair paire recherchée
+     * @param maxAge âge maximal accepté
+     * @return prix frais
+     * @throws TradingException si le prix est absent, futur ou périmé
+     */
+    public MarketPrice requireFresh(String pair, Duration maxAge) {
         MarketPrice price = repository.findMarketPrice(pair)
                 .orElseThrow(() -> new TradingException(HttpStatus.SERVICE_UNAVAILABLE, "MARKET_PRICE_MISSING", "Aucun prix disponible pour " + pair));
-        ensureFresh(price, properties.getPricing().getDisplayMaxAge());
+        ensureFresh(price, maxAge);
         return price;
     }
 

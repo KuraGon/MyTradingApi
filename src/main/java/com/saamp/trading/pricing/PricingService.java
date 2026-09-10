@@ -28,6 +28,23 @@ public class PricingService {
     }
 
     private ClientQuote build(long companyId, Asset metal, Asset baseCurrency, boolean execution) {
+        return build(companyId, metal, baseCurrency, execution, null);
+    }
+
+    /**
+     * Acquiert les mêmes prix client avec la fraîcheur propre au monitor.
+     * @param companyId société
+     * @param metal métal
+     * @param baseCurrency devise
+     * @param maxAge fraîcheur autorisée
+     * @return cotation client
+     * @throws TradingException si prix ou paramétrage indisponibles
+     */
+    public ClientQuote quoteForMonitor(long companyId, Asset metal, Asset baseCurrency, java.time.Duration maxAge) {
+        return build(companyId, metal, baseCurrency, false, java.util.Objects.requireNonNull(maxAge));
+    }
+
+    private ClientQuote build(long companyId, Asset metal, Asset baseCurrency, boolean execution, java.time.Duration maxAge) {
         if (!metal.isMetal() || !baseCurrency.isCurrency()) throw new IllegalArgumentException("metal/base currency expected");
         String pair = TradingPair.metalAgainst(metal, baseCurrency);
         if (execution) {
@@ -35,11 +52,12 @@ public class PricingService {
         }
         MarketPrice market;
         try {
-            market = execution ? marketPrices.requireFreshForExecution(pair) : marketPrices.requireFreshForDisplay(pair);
+            market = execution ? marketPrices.requireFreshForExecution(pair) :
+                    maxAge == null ? marketPrices.requireFreshForDisplay(pair) : marketPrices.requireFresh(pair, maxAge);
         } catch (TradingException staleOrMissing) {
             if (execution || !("MARKET_PRICE_STALE".equals(staleOrMissing.getCode()) || "MARKET_PRICE_MISSING".equals(staleOrMissing.getCode()))) throw staleOrMissing;
             refresh.refresh(pair);
-            market = marketPrices.requireFreshForDisplay(pair);
+            market = maxAge == null ? marketPrices.requireFreshForDisplay(pair) : marketPrices.requireFresh(pair, maxAge);
         }
         SpreadConfig spread = repository.findCurrentSpread(companyId, metal, OffsetDateTime.now())
                 .orElseThrow(() -> new TradingException(HttpStatus.CONFLICT, "SPREAD_NOT_CONFIGURED", "Spread non configuré pour " + metal));
