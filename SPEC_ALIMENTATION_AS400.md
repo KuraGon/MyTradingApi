@@ -18,7 +18,7 @@ Les valeurs comptables sont centralisées dans As400TradingMapping et configurab
 
 market_price est le Rate/FillPrice fourni à ExecutionEventHandler et persisté par markFilled, pas une nouvelle cotation. SIREF3 reçoit exactement stonex_exid, identique pour les quatre jambes : null/blanc ou plus de 20 caractères bloque la synchronisation, sans troncature.
 
-**SIMULATED reste inchangé** : ses EXID actuels SIM-UUID dépassent 20 caractères et sont donc bloqués. Les tests du flux AS400 utilisent des EXID compatibles. Aucun raccourcissement du provider ni autorisation StoneX réelle n'est inclus.
+**SIMULATED actuel** : `SimulatedTradingProvider.newExecutionId()` génère `SIM-` suivi de 16 caractères Base64 URL sans padding, issus de 12 octets aléatoires (96 bits), soit exactement 20 caractères. Ces nouveaux EXID respectent la limite SIREF3 de 20 caractères contrôlée par le code, sans troncature. Les anciens EXID `SIM-UUID` plus longs restent bloqués. Cette compatibilité de longueur ne valide ni la cible DB2 réelle ni une autorisation d'écriture AS400/StoneX.
 
 ## Migration 010 et historique
 

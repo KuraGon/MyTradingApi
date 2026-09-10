@@ -223,14 +223,32 @@ VALUES
 
 Pour alimenter le compte en développement, utiliser `TransferService` (le transport service-to-service n'est volontairement pas exposé tant que son authentification n'est pas arbitrée).
 
-Pour le provider simulé, insérer des prix :
+Pour renouveler une cotation SIMULATED en UAT, utiliser exclusivement la
+[fixture dédiée](scripts/uat/simulated-price.sql), après identification de la
+cible et autorisation de la recette. Exemple depuis la cible UAT, avec les
+identifiants PostgreSQL fournis par le mécanisme habituel (aucun secret dans
+la commande) :
 
-```sql
-INSERT INTO trading_market_price(pair,bid,ask,mid,price_as_of,source)
-VALUES ('XAUEUR', 2900.000000, 2901.000000, 2900.500000, NOW(), 'SIMULATED')
-ON CONFLICT (pair) DO UPDATE
-SET bid=EXCLUDED.bid, ask=EXCLUDED.ask, mid=EXCLUDED.mid, price_as_of=NOW(), source='SIMULATED';
+```sh
+psql -X -h 127.0.0.1 -p 5432 -U trading_uat -d trading_uat \
+  -v pair=XAUEUR -v bid=3000.000000 -v ask=3001.000000 \
+  -f scripts/uat/simulated-price.sql
 ```
+
+La fixture refuse toute base autre que `trading_uat`, tout schéma courant
+autre que `public`, une paire absente, une source autre que `SIMULATED` et
+les prix invalides. Elle verrouille exactement la paire demandée, exige
+une ligne affectée et relit la ligne avant COMMIT. Elle calcule
+`mid = ROUND((bid + ask) / 2, 6)` et donne à `price_as_of` et `updated_at`
+le même horodatage courant PostgreSQL. Les autres attributs et
+`trading_spread` restent inchangés. Une erreur interrompt psql et annule
+la transaction ; aucun UPDATE partiel bid/ask ne doit remplacer ce script.
+
+Le contrôle du nom de base ne remplace pas la vérification de l'hôte UAT.
+Ce script n'est ni une migration ni une initialisation automatique : il
+ne crée aucune paire et ne doit pas être exécuté sans autorisation.
+Le provider SIMULATED conserve `price_as_of` lors de ses lectures ; sans
+nouvelle fixture, le prix redevient périmé après le délai de fraîcheur configuré.
 
 ## Tests importants
 
