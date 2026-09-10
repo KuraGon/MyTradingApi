@@ -40,4 +40,42 @@ class As400ConfigurationTest {
             assertThat(ctx).hasSingleBean(As400MovementGateway.class);
         });
     }
+
+    @Test void noneUsesRealToolboxPropertiesAndVerifiesAutocommit() throws Exception {
+        var choices=new com.ibm.as400.access.AS400JDBCDriver().getPropertyInfo("jdbc:as400://not-connected",new java.util.Properties());
+        assertThat(java.util.Arrays.stream(choices).filter(p->p.name.equals("transaction isolation")).findFirst().orElseThrow().choices).contains("none");
+        assertThat(java.util.Arrays.stream(choices).filter(p->p.name.equals("true autocommit")).findFirst().orElseThrow().choices).contains("false");
+        context.withPropertyValues("trading.as400.jdbc-url=jdbc:as400://not-connected",
+                "trading.as400.username=test","trading.as400.password=test-only","trading.as400.commit-mode=NONE").run(ctx->{
+            assertThat(ctx).hasNotFailed();
+            var ds=((JdbcTemplate)ctx.getBean("as400JdbcTemplate")).getDataSource();
+            var connection=mock(java.sql.Connection.class);
+            when(connection.getAutoCommit()).thenReturn(true);
+            when(connection.getTransactionIsolation()).thenReturn(java.sql.Connection.TRANSACTION_NONE);
+            try(var driver=mockStatic(java.sql.DriverManager.class)) {
+                driver.when(()->java.sql.DriverManager.getConnection(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(java.util.Properties.class))).thenReturn(connection);
+                try(var actual=ds.getConnection()) { assertThat(actual).isSameAs(connection); }
+                var properties=org.mockito.ArgumentCaptor.forClass(java.util.Properties.class);
+                driver.verify(()->java.sql.DriverManager.getConnection(org.mockito.ArgumentMatchers.eq("jdbc:as400://not-connected"),properties.capture()));
+                assertThat(properties.getValue()).containsEntry("transaction isolation","none").containsEntry("true autocommit","false");
+                var order=inOrder(connection);
+                order.verify(connection).setTransactionIsolation(java.sql.Connection.TRANSACTION_NONE);
+                order.verify(connection).setAutoCommit(true);
+                verify(connection,never()).setAutoCommit(false);
+                verify(connection,never()).commit();
+                verify(connection,never()).rollback();
+            }
+            verifyNoInteractions(ctx.getBean(DataSource.class));
+        });
+    }
+
+    @Test void invalidCommitModeFailsBeforeConnection() {
+        context.withPropertyValues("trading.as400.jdbc-url=jdbc:as400://not-connected","trading.as400.commit-mode=AUTO")
+                .run(ctx->assertThat(ctx).hasFailed());
+    }
+
+    @Test void noneRejectsConflictingJdbcUrlSettings() {
+        context.withPropertyValues("trading.as400.jdbc-url=jdbc:as400://not-connected;true autocommit=true",
+                "trading.as400.commit-mode=NONE").run(ctx->assertThat(ctx).hasFailed());
+    }
 }

@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
-/** Soumet SICOUVI en une transaction locale ; aucune reparation implicite d'un groupe partiel. */
+/** Soumet SICOUVI selon le mode DB2 explicite ; aucune reparation implicite d'un groupe partiel. */
 final class JdbcAs400MovementGateway implements As400MovementGateway {
     private static final String LOOKUP = """
             SELECT SIPROV,SIACFV,SIMET,SIPDS,SICOT,SITXCH FROM SPECIF1.SICOUVI1
@@ -24,7 +24,7 @@ final class JdbcAs400MovementGateway implements As400MovementGateway {
         this.jdbc=jdbc; this.clock=clock; this.transactions=transactions;
     }
 
-    /** Conserve lookup et les N INSERT dans une seule transaction DB2.
+    /** Verifie le groupe avant les INSERT ; seul READ_COMMITTED permet un rollback de groupe.
      * @param group groupe valide et durable
      * @return provisoires confirmes
      * @throws DataAccessException si le read-back ne confirme pas la soumission
@@ -41,7 +41,7 @@ final class JdbcAs400MovementGateway implements As400MovementGateway {
                 return java.util.Collections.nCopies(group.expectedLegCount(),0);
             });
         } catch (DataAccessException | TransactionException exception) {
-            // REQUIRES_NEW : la transaction incertaine est terminee avant ce read-back.
+            // READ_COMMITTED : nouvelle transaction ; NONE : lectures autocommit apres les INSERT deja durables.
             try {
                 var confirmed=transactions.execute(status -> lookupGroup(group));
                 if (!confirmed.isEmpty()) return confirmed;

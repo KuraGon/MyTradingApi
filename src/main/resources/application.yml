@@ -30,6 +30,7 @@ springdoc:
 trading:
   as400:
     enabled: ${TRADING_AS400_ENABLED:false}
+    commit-mode: ${TRADING_AS400_COMMIT_MODE:READ_COMMITTED}
     sync-delay: ${TRADING_AS400_SYNC_DELAY:30s}
     submitted-poll-delay: ${TRADING_AS400_SUBMITTED_POLL_DELAY:5m}
     accepted-poll-delay: ${TRADING_AS400_ACCEPTED_POLL_DELAY:1h}

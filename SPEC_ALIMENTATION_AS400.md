@@ -63,20 +63,26 @@ La séquence PostgreSQL reste bornée 1..999999, cyclique. Chaque jambe reçoit 
 
 BigDecimal exclusivement, une seule division finale SICOT. Poids arrondi à zéro, dépassement DECIMAL ou mapping impossible : BLOCKED/FAILED, aucun ajustement artificiel et aucune modification du FILLED.
 
-## Transaction DB2 et idempotence
+## Mode DB2 explicite et idempotence
 
-Le gestionnaire local DataSourceTransactionManager existant conserve READ_COMMITTED, REQUIRES_NEW et timeout 30 secondes. READ_COMMITTED limite la contention sur SICOUVI1 partagé avec les traitements historiques. Aucun XA/2PC.
+`trading.as400.commit-mode` / `TRADING_AS400_COMMIT_MODE` accepte uniquement `READ_COMMITTED` (défaut conservé) ou `NONE`.
 
-Dans une seule transaction DB2 :
+En `READ_COMMITTED`, le gestionnaire local conserve REQUIRES_NEW et un timeout de 30 secondes. Ce mode exige un fichier compatible avec le commitment control ; il ne convient pas au SICOUVI1 non journalisé constaté sur la cible historique.
+
+En `NONE`, IBM Toolbox JDBC reçoit `transaction isolation=none` et `true autocommit=false`. Chaque connexion est explicitement vérifiée avec isolation JDBC `TRANSACTION_NONE` et autocommit actif. `true autocommit` est une option IBM Toolbox distincte de `Connection.setAutoCommit(true)` : elle reste désactivée pour ne pas imposer un niveau transactionnel exigeant la journalisation. Les propriétés d'isolation concurrentes dans l'URL sont refusées. Aucune transaction Spring DB2 READ_COMMITTED n'entoure les INSERT dans ce mode. Les autres datasources ne changent pas.
+
+Le mode `NONE` s'aligne sur l'interface historique non journalisée : **les quatre INSERT ne sont pas atomiques**. Une erreur au troisième INSERT peut laisser deux lignes durablement présentes. Aucun rollback du groupe ni aucune compensation DELETE automatique n'est annoncé ou implémenté. Les quatre mouvements sont préparés et validés avant le premier INSERT, leurs identités restant dans PostgreSQL pour audit.
+
+Dans les deux modes :
 - relire les quatre corrélations SISTE + SICOUI + SICLI + SIREF3 ;
 - vérifier aussi SIACFV, SIMET, SIPDS, SICOT et SITXCH ;
 - si 4/4 conformes, réutiliser leurs SIPROV sans INSERT ;
-- si 0/4, insérer les quatre lignes puis effectuer un seul COMMIT ;
+- si 0/4, insérer les quatre lignes déterministes et contrôler chaque row count ; un COMMIT de groupe existe uniquement en READ_COMMITTED ;
 - si 1/4, 2/4 ou 3/4, bloquer avec AS400_PARTIAL_GROUP_REQUIRES_REVIEW, sans compléter les lignes manquantes.
 
-Une erreur avant commit entraîne le rollback de toute la transaction. Après erreur JDBC ou commit incertain, le read-back s'exécute dans une nouvelle transaction : 4/4 confirme la soumission ; 0/4 permet le retry ; partiel impose la revue. Un read-back indisponible ne déclenche aucun resend : le prochain essai reprend d'abord le lookup complet.
+Une erreur avant commit entraîne un rollback de groupe uniquement en READ_COMMITTED. Après erreur JDBC ou réponse perdue, le read-back utilise une nouvelle transaction en READ_COMMITTED, ou des lectures autocommit en NONE : 4/4 confirme la soumission sans resend ; 0/4 permet le retry ; 1/4, 2/4 ou 3/4 impose `AS400_PARTIAL_GROUP_REQUIRES_REVIEW`, traité en BLOCKED/FAILED par le worker. Il n'y a jamais de réparation automatique des jambes manquantes. Un read-back indisponible ne déclenche aucun resend immédiat : le prochain essai reprend d'abord le lookup complet. Une corrélation ambiguë ou différente est terminale.
 
-**UAT à vérifier sur IBM i : journalisation et commitment control de SICOUVI1, droits, rollback réel, contention avec MySAAMP et batch.** Le code conserve le mécanisme transactionnel existant ; il ne configure ni ne présume la journalisation réelle du fichier. Aucun repli vers des commits par jambe ou autocommit n'est prévu.
+**Préflight IBM i :** SICOUVI1 et PROVISP1 ont été constatés `JOURNALED=NO` ; aucune modification de leur journalisation n'est prévue. Cette cible doit utiliser explicitement NONE. Vérifier les droits, la cible autorisée et la concurrence du traitement aval avant toute recette. Le mode n'est jamais choisi automatiquement après une erreur. Un éventuel nettoyage de recette reste une opération distincte, autorisée et tracée dans un manifeste permanent ; le connecteur ne supprime rien.
 
 ## Progression
 
@@ -98,6 +104,7 @@ Les délais et la datasource AS400 existants sont conservés. Sans URL, l'applic
 | Propriété sous trading.as400 | Variable | Défaut |
 |---|---|---|
 | enabled | TRADING_AS400_ENABLED | false |
+| commit-mode | TRADING_AS400_COMMIT_MODE | READ_COMMITTED ; NONE explicite pour un fichier non journalisé |
 | sync-delay | TRADING_AS400_SYNC_DELAY | 30s |
 | submitted-poll-delay | TRADING_AS400_SUBMITTED_POLL_DELAY | 5m |
 | accepted-poll-delay | TRADING_AS400_ACCEPTED_POLL_DELAY | 1h |

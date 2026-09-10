@@ -148,7 +148,7 @@ class JdbcAs400MovementGatewayTest {
         assertThat(gateway.settled(group(As400SyncState.ACCEPTED).legs().getFirst())).isFalse();
     }
 
-    @Test void thirdInsertFailureRollsBackEveryLegBeforeReadBack() throws Exception {
+    @Test void explicitReadCommittedThirdInsertFailureRollsBackBeforeReadBack() throws Exception {
         var harness=new TransactionHarness();
         when(harness.jdbc.update(anyString(),any(Object[].class))).thenAnswer(i->{
             if (harness.staged.size()==2) throw new DataAccessResourceFailureException("third insert");
@@ -189,6 +189,68 @@ class JdbcAs400MovementGatewayTest {
         verify(harness.connection,never()).rollback();
     }
 
+    @Test void noneThirdInsertFailurePreservesTwoRowsAndBlocksAfterReadBack() {
+        var harness=new NoneHarness();
+        when(harness.jdbc.update(anyString(),any(Object[].class))).thenAnswer(i->{
+            if(harness.committed.size()==2) throw new DataAccessResourceFailureException("third insert");
+            harness.committed.add((Integer)((Object[])i.getRawArguments()[1])[1]);return 1;
+        });
+        assertThatThrownBy(()->harness.gateway.submit(pending)).hasMessage("AS400_PARTIAL_GROUP_REQUIRES_REVIEW");
+        assertThat(harness.committed).hasSize(2);
+        verify(harness.jdbc,times(8)).query(anyString(),any(RowMapper.class),any(Object[].class));
+        verify(harness.jdbc,times(3)).update(anyString(),any(Object[].class));
+        assertThatThrownBy(()->harness.gateway.submit(pending)).hasMessage("AS400_PARTIAL_GROUP_REQUIRES_REVIEW");
+        verify(harness.jdbc,times(3)).update(anyString(),any(Object[].class));
+        verifyNoInteractions(harness.dataSource);
+    }
+
+    @Test void noneFourthInsertResponseLostConfirmsFourRowsWithoutResend() {
+        var harness=new NoneHarness();
+        when(harness.jdbc.update(anyString(),any(Object[].class))).thenAnswer(i->{
+            harness.committed.add((Integer)((Object[])i.getRawArguments()[1])[1]);
+            if(harness.committed.size()==4) throw new DataAccessResourceFailureException("fourth response lost");
+            return 1;
+        });
+        assertThat(harness.gateway.submit(pending)).containsExactly(0,0,0,0);
+        assertThat(harness.committed).hasSize(4);
+        verify(harness.jdbc,times(8)).query(anyString(),any(RowMapper.class),any(Object[].class));
+        assertThat(harness.gateway.submit(pending)).containsExactly(0,0,0,0);
+        verify(harness.jdbc,times(4)).update(anyString(),any(Object[].class));
+        verifyNoInteractions(harness.dataSource);
+    }
+
+    @Test void noneAbsentGroupInsertsFourAndExistingGroupNeverResends() {
+        var harness=new NoneHarness();
+        assertThat(harness.gateway.submit(pending)).containsExactly(0,0,0,0);
+        assertThat(harness.committed).hasSize(4);
+        assertThat(harness.gateway.submit(pending)).containsExactly(0,0,0,0);
+        verify(harness.jdbc,times(4)).update(anyString(),any(Object[].class));
+        verifyNoInteractions(harness.dataSource);
+    }
+
+    @Test void noneIncompleteGroupIsRejectedBeforeAnyJdbcAccess() {
+        var harness=new NoneHarness();
+        assertThatThrownBy(()->harness.gateway.submit(new As400MovementGroup(4,pending.legs().subList(0,3))))
+                .hasMessage("AS400_GROUP_INCOMPLETE");
+        verifyNoInteractions(harness.jdbc,harness.dataSource);
+    }
+
+    private static class NoneHarness {
+        final JdbcTemplate jdbc=mock(JdbcTemplate.class);
+        final javax.sql.DataSource dataSource=mock(javax.sql.DataSource.class);
+        final List<Integer> committed=new ArrayList<>();
+        final As400MovementGateway gateway;
+        NoneHarness() {
+            gateway=new As400Configuration().as400MovementGateway(jdbc,new org.springframework.mock.env.MockEnvironment()
+                    .withProperty("trading.as400.commit-mode","NONE"));
+            when(jdbc.query(anyString(),any(RowMapper.class),any(Object[].class))).thenAnswer(i->
+                    committed.contains((Integer)((Object[])i.getRawArguments()[2])[1])?List.of(0):List.of());
+            when(jdbc.update(anyString(),any(Object[].class))).thenAnswer(i->{
+                committed.add((Integer)((Object[])i.getRawArguments()[1])[1]);return 1;
+            });
+        }
+    }
+
     private static class TransactionHarness {
         final java.sql.Connection connection=mock(java.sql.Connection.class);
         final JdbcTemplate jdbc=mock(JdbcTemplate.class);
@@ -205,7 +267,8 @@ class JdbcAs400MovementGatewayTest {
             when(jdbc.update(anyString(),any(Object[].class))).thenAnswer(i->{staged.add(1);return 1;});
             doAnswer(i->{committed.addAll(staged);staged.clear();return null;}).when(connection).commit();
             doAnswer(i->{staged.clear();return null;}).when(connection).rollback();
-            gateway=new As400Configuration().as400MovementGateway(jdbc);
+            gateway=new As400Configuration().as400MovementGateway(jdbc,new org.springframework.mock.env.MockEnvironment()
+                    .withProperty("trading.as400.commit-mode","READ_COMMITTED"));
         }
     }
 }
