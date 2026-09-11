@@ -28,13 +28,24 @@ class LocalPostgresTest {
         try(var context=new AnnotationConfigApplicationContext(LocalPostgres.Context.class)) {
             var spring=new JdbcTemplate(context.getBean(DataSource.class));
             assertThat(spring.queryForObject("SELECT current_schema()",String.class)).isEqualTo(LocalPostgres.schema()).startsWith("saamp_test_").isNotEqualTo("public");
-            assertThat(spring.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(13);
+            assertThat(spring.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(14);
             assertThat(spring.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=? AND table_name='databasechangelog'",Integer.class,LocalPostgres.schema())).isEqualTo(1);
             try(var c=LocalPostgres.connection();var s=c.createStatement();var r=s.executeQuery("SELECT current_schema()")) {
                 r.next();assertThat(r.getString(1)).isEqualTo(LocalPostgres.schema());
             }
             assertThat(jdbc.queryForList("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")).isEqualTo(before);
             assertThat(jdbc.queryForList("SELECT id,md5sum FROM public.databasechangelog WHERE id='013-risk-monitor'")).isEqualTo(checksum);
+        }
+    }
+
+    @Test void sequentialConnectionsReuseOnlyTheirOwnSchemaPool() throws Exception {
+        int first;
+        try(var c=LocalPostgres.connection();var s=c.createStatement();var r=s.executeQuery("SELECT pg_backend_pid()")) {
+            r.next();first=r.getInt(1);
+        }
+        try(var c=LocalPostgres.connection();var s=c.createStatement();var r=s.executeQuery("SELECT pg_backend_pid(),current_schema()")) {
+            r.next();assertThat(r.getInt(1)).isEqualTo(first);
+            assertThat(r.getString(2)).isEqualTo(LocalPostgres.schema());
         }
     }
 

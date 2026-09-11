@@ -25,3 +25,5 @@ databaseChangeLog:
       file: db/changelog/012-order-error-code-width.sql
   - include:
       file: db/changelog/013-risk-monitor.sql
+  - include:
+      file: db/changelog/014-signed-internal-balance-projection.sql

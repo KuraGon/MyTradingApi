@@ -1,7 +1,7 @@
 package com.saamp.trading.api;
 
 import com.saamp.trading.account.AccountService;
-import com.saamp.trading.account.BalanceRepository;
+import com.saamp.trading.account.EffectiveBalanceService;
 import com.saamp.trading.account.PositionService;
 import com.saamp.trading.reservation.ReservationService;
 import com.saamp.trading.risk.RiskService;
@@ -20,7 +20,7 @@ import java.util.List;
 public class AccountController {
     private final CurrentTraderService traders;
     private final AccountService accounts;
-    private final BalanceRepository balances;
+    private final EffectiveBalanceService balances;
     private final ReservationService reservations;
     private final PositionService positions;
     private final RiskService risk;
@@ -35,7 +35,7 @@ public class AccountController {
      * @param positions valorisation client des positions métal
      * @param risk calcul de risque existant
      */
-    public AccountController(CurrentTraderService traders, AccountService accounts, BalanceRepository balances,
+    public AccountController(CurrentTraderService traders, AccountService accounts, EffectiveBalanceService balances,
                              ReservationService reservations, PositionService positions, RiskService risk) {
         this.traders=traders; this.accounts=accounts; this.balances=balances; this.reservations=reservations;
         this.positions=positions; this.risk=risk;
@@ -69,7 +69,7 @@ public class AccountController {
         var account = accounts.requireByCompany(trader.companyId());
         return balances.findAll(account.id()).stream()
                 .filter(balance -> balance.asset() == account.baseCurrency() || balance.asset().isMetal())
-                .map(balance -> BalanceView.from(balance, reservations.available(account.id(), balance.asset())))
+                .map(balance -> BalanceView.from(balance, reservations.available(account.id(), balance.asset(), balance.quantity())))
                 .toList();
     }
 

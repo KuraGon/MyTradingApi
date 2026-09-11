@@ -348,12 +348,11 @@ class RuleBTradingIntegrationTest {
         assertCode(()->preview(OrderSide.SELL,"1"),"INSUFFICIENT_FREE_EQUITY");
     }
 
-    @Test void negativeCurrencyRejectedInJavaAndPostgresButMetalAllowed() {
+    @Test void signedProjectionRecordsCurrencyAndMetalFacts() {
         fund("10","0");
-        assertCode(()->ledger.post(accountId,Asset.EUR,b("-11"),LedgerEntryType.ADJUSTMENT,null,null,"test"),"NEGATIVE_CURRENCY_BALANCE");
-        assertThatThrownBy(()->jdbc.update("UPDATE trading_balance SET quantity=-1 WHERE account_id=? AND asset='EUR'",accountId))
-                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        ledger.post(accountId,Asset.EUR,b("-11"),LedgerEntryType.ADJUSTMENT,null,null,"test");
         ledger.post(accountId,Asset.XAU,b("-1"),LedgerEntryType.ADJUSTMENT,null,null,"test");
+        assertThat(jdbc.queryForObject("SELECT quantity FROM trading_balance WHERE account_id=? AND asset='EUR'",BigDecimal.class,accountId)).isEqualByComparingTo("-1");
         assertThat(jdbc.queryForObject("SELECT quantity FROM trading_balance WHERE account_id=? AND asset='XAU'",BigDecimal.class,accountId)).isEqualByComparingTo("-1");
     }
 
@@ -457,7 +456,7 @@ class RuleBTradingIntegrationTest {
             admissionLocked.countDown();
             assertThat(allowAdmission.await(10,TimeUnit.SECONDS)).isTrue();
             return call.callRealMethod();
-        }).when(capacity).reserve(any(),any(),anyMap(),any(),any(),eq(true));
+        }).when(capacity).reserve(any(),any(),anyMap(),anyMap(),any(),any(),eq(true),any());
         expiryCandidatesRead=candidatesRead;
         var pool=Executors.newFixedThreadPool(2);
         try {

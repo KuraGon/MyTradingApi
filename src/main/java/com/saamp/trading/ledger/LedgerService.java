@@ -33,9 +33,7 @@ public class LedgerService {
         if (delta == null || delta.signum() == 0) throw new IllegalArgumentException("delta must be non-zero");
         BigDecimal current = balances.lockQuantity(accountId, asset);
         BigDecimal after = current.add(delta).setScale(6, java.math.RoundingMode.HALF_UP);
-        if (asset.isCurrency() && after.signum() < 0) {
-            throw new TradingException(HttpStatus.CONFLICT, "NEGATIVE_CURRENCY_BALANCE", "Solde devise négatif interdit");
-        }
+        // Projection signée de faits irréversibles ; la capacité est contrôlée avant engagement.
         balances.updateQuantity(accountId, asset, after);
         ledger.insert(accountId, asset, delta, type, orderId, transferRef, after, createdBy);
         return after;

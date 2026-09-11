@@ -18,13 +18,16 @@ public class ReservationService {
     private final BalanceRepository balances;
     private final ReservationRepository reservations;
     private final TradingProperties properties;
+    private final com.saamp.trading.account.EffectiveBalanceService operational;
 
-    public ReservationService(BalanceRepository balances, ReservationRepository reservations, TradingProperties properties) {
-        this.balances = balances; this.reservations = reservations; this.properties = properties;
+    public ReservationService(BalanceRepository balances, ReservationRepository reservations, TradingProperties properties, com.saamp.trading.account.EffectiveBalanceService operational) {
+        this.balances = balances; this.reservations = reservations; this.properties = properties; this.operational=operational;
     }
 
     @Transactional
     public long reserveCash(long accountId, Asset asset, BigDecimal quantity, long orderId) {
+        if (operational.enforced()) throw new TradingException(HttpStatus.CONFLICT,"RULE_B_ADMISSION_REQUIRED",
+                "La réservation doit passer par l'admission Rule B et son snapshot officiel");
         if (!asset.isCurrency()) throw new IllegalArgumentException("Cash reservation requires currency");
         BigDecimal balance = balances.lockQuantity(accountId, asset);
         BigDecimal alreadyReserved = reservations.activeReserved(accountId, asset);
@@ -39,10 +42,16 @@ public class ReservationService {
     }
 
     public BigDecimal available(long accountId, Asset asset) {
-        BigDecimal balance = balances.find(accountId, asset).map(b -> b.quantity()).orElse(BigDecimal.ZERO);
+        BigDecimal balance = operational.findAll(accountId).stream().filter(b -> b.asset()==asset).map(b -> b.quantity()).findFirst().orElse(BigDecimal.ZERO);
         return balance.subtract(reservations.activeReserved(accountId, asset));
     }
 
+    /** Disponible issu du snapshot opérationnel, net des engagements persistants.
+     * @param accountId compte @param asset actif @param operationalBalance solde
+     * @return disponible sans seconde lecture de compte */
+    public BigDecimal available(long accountId, Asset asset, BigDecimal operationalBalance) {
+        return operationalBalance.subtract(reservations.activeReserved(accountId, asset));
+    }
     @Transactional public void consumeForOrder(long orderId) { reservations.consumeForOrder(orderId); }
     @Transactional public void releaseForOrder(long orderId) { reservations.releaseForOrder(orderId); }
 

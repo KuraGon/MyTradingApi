@@ -1,7 +1,7 @@
 package com.saamp.trading.risk;
 
 import com.saamp.trading.account.AccountPosition;
-import com.saamp.trading.account.BalanceRepository;
+import com.saamp.trading.account.EffectiveBalanceService;
 import com.saamp.trading.account.PositionService;
 import com.saamp.trading.account.TradingAccount;
 import org.springframework.stereotype.Service;
@@ -30,7 +30,7 @@ public class RiskService {
                 .map(com.saamp.trading.account.Balance::quantity).reduce(BigDecimal.ZERO, BigDecimal::add);
         return RiskCalculator.evaluateAccountPositions(funds, positions.value(account, balanceSnapshot, quotes::get, rates::get));
     }
-    private final BalanceRepository balances;
+    private final EffectiveBalanceService balances;
     private final PositionService positions;
     private final RiskSnapshotRepository snapshots;
 
@@ -40,7 +40,7 @@ public class RiskService {
      * @param positions liquidation et marge client par métal
      * @param snapshots historique local des indicateurs calculés
      */
-    public RiskService(BalanceRepository balances, PositionService positions, RiskSnapshotRepository snapshots) {
+    public RiskService(EffectiveBalanceService balances, PositionService positions, RiskSnapshotRepository snapshots) {
         this.balances = balances;
         this.positions = positions;
         this.snapshots = snapshots;

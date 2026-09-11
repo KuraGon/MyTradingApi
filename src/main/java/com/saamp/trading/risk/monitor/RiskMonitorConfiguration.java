@@ -26,7 +26,7 @@ public class RiskMonitorConfiguration {
         tx.setTimeout(5);
         return new RiskMonitorRepository(jdbc,tx,accounts,json);
     }
-    @Bean RiskMonitorService riskMonitorService(RiskMonitorRepository repository,AccountRepository accounts,BalanceRepository balances,
+    @Bean RiskMonitorService riskMonitorService(RiskMonitorRepository repository,AccountRepository accounts,EffectiveBalanceService balances,
             PricingService pricing,MarginRateRepository rates,RiskService risk,RiskMonitorProperties config) {
         return new RiskMonitorService(repository,accounts,balances,pricing,rates,risk,config,Clock.systemUTC());
     }

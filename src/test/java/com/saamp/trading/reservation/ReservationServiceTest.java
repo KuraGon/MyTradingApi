@@ -21,7 +21,7 @@ class ReservationServiceTest {
         ReservationRepository repository = mock(ReservationRepository.class);
         TradingProperties properties = new TradingProperties();
         properties.getReservations().setTtl(Duration.ofMinutes(2));
-        ReservationService service = new ReservationService(balances, repository, properties);
+        ReservationService service = new ReservationService(balances, repository, properties, new com.saamp.trading.account.EffectiveBalanceService(balances,null,null,null,new com.saamp.trading.account.EffectiveBalanceProperties()));
 
         when(balances.lockQuantity(1L, Asset.EUR)).thenReturn(new BigDecimal("100.000000"));
         when(repository.activeReserved(1L, Asset.EUR)).thenReturn(new BigDecimal("20.000000"));

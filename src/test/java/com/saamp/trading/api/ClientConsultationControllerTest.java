@@ -102,7 +102,7 @@ class ClientConsultationControllerTest {
     @MockitoBean
     private AccountService accounts;
     @MockitoBean
-    private BalanceRepository balances;
+    private EffectiveBalanceService balances;
     @MockitoBean
     private ReservationService reservations;
     @MockitoBean
@@ -159,8 +159,8 @@ class ClientConsultationControllerTest {
                 new Balance(ACCOUNT_ID, Asset.EUR, new BigDecimal("123.450000"), NOW),
                 new Balance(ACCOUNT_ID, Asset.USD, new BigDecimal("999.000000"), NOW),
                 new Balance(ACCOUNT_ID, Asset.XAU, new BigDecimal("2.000000"), NOW)));
-        when(reservations.available(ACCOUNT_ID, Asset.EUR)).thenReturn(new BigDecimal("100.000000"));
-        when(reservations.available(ACCOUNT_ID, Asset.XAU)).thenReturn(new BigDecimal("2.000000"));
+        when(reservations.available(eq(ACCOUNT_ID), eq(Asset.EUR), any())).thenReturn(new BigDecimal("100.000000"));
+        when(reservations.available(eq(ACCOUNT_ID), eq(Asset.XAU), any())).thenReturn(new BigDecimal("2.000000"));
 
         mvc.perform(get("/api/v1/accounts/me/balances").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isOk())

@@ -15,6 +15,7 @@ import liquibase.integration.spring.SpringLiquibase;
 public final class LocalPostgres {
     private static final String URL="jdbc:postgresql://127.0.0.1:5432/trading";
     private static final Set<String> OWNED=ConcurrentHashMap.newKeySet();
+    private static final java.util.Map<String,com.zaxxer.hikari.HikariDataSource> POOLS=new ConcurrentHashMap<>();
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(()->{
             for(String name:Set.copyOf(OWNED)) {
@@ -39,7 +40,9 @@ public final class LocalPostgres {
     }
     private static Connection administrativeConnection() throws SQLException {
         validateUrl(URL);
-        var c=new DriverManagerDataSource(URL,"trading",password()).getConnection();
+        var source=new DriverManagerDataSource(URL,"trading",password());
+        source.setConnectionProperties(localProperties());
+        var c=source.getConnection();
         try(var s=c.createStatement()) {
             s.setQueryTimeout(5);
             try(var r=s.executeQuery("SELECT host(inet_server_addr()),inet_server_port(),current_database(),current_schema(),current_user,has_database_privilege(current_user,current_database(),'CREATE')")) {
@@ -49,6 +52,30 @@ public final class LocalPostgres {
             }
             return c;
         } catch(Exception failure) { c.close();throw failure; }
+    }
+    // Instance exclusivement loopback : éviter la négociation SSL opportuniste qui expire
+    // dans enableSSL avant toute authentification sur ce PostgreSQL local sans TLS.
+    private static java.util.Properties localProperties() {
+        var properties=new java.util.Properties();
+        properties.setProperty("sslmode","disable");
+        return properties;
+    }
+    // Un pool par schema evite une authentification Windows pour chaque requete.
+    // Ni URL, ni role, ni schema global ne sont modifies.
+    private static com.zaxxer.hikari.HikariDataSource pool(String name) {
+        requireOwned(name);
+        return POOLS.computeIfAbsent(name,key->{
+            var raw=new DriverManagerDataSource(URL+"?currentSchema="+key,"trading",password());
+            raw.setConnectionProperties(localProperties());
+            var config=new com.zaxxer.hikari.HikariConfig();
+            config.setDataSource(raw);
+            config.setPoolName(key);
+            config.setMaximumPoolSize(8);
+            config.setMinimumIdle(0);
+            config.setConnectionTimeout(10000);
+            config.setInitializationFailTimeout(10000);
+            return new com.zaxxer.hikari.HikariDataSource(config);
+        });
     }
     private static void requireOwned(String name) {
         if(name==null || !name.matches("saamp_test_[a-f0-9]{32}") || !OWNED.contains(name))
@@ -81,6 +108,8 @@ public final class LocalPostgres {
      */
     public static void dropSchema(String name) throws SQLException {
         requireOwned(name);
+        var pool=POOLS.remove(name);
+        if(pool!=null) pool.close();
         try(var c=administrativeConnection();var s=c.createStatement()) {
             c.setSchema(name);verify(c,name);s.setQueryTimeout(10);
             s.execute("DROP SCHEMA "+name+" CASCADE");OWNED.remove(name);
@@ -93,10 +122,11 @@ public final class LocalPostgres {
     public static DriverManagerDataSource dataSource(String name) {
         requireOwned(name);
         return new DriverManagerDataSource(URL+"?currentSchema="+name,"trading",password()) {
+            { setConnectionProperties(localProperties()); }
             @Override public Connection getConnection() throws SQLException {
                 if (!(URL+"?currentSchema="+name).equals(getUrl()) || !"trading".equals(getUsername()))
                     throw new SQLException("Test datasource destination cannot be overridden");
-                var c=super.getConnection();
+                var c=pool(name).getConnection();
                 try {
                     verify(c,name);
                     return (Connection)java.lang.reflect.Proxy.newProxyInstance(Connection.class.getClassLoader(),new Class<?>[]{Connection.class},(proxy,method,args)->{

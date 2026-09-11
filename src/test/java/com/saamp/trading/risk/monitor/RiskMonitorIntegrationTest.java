@@ -60,6 +60,7 @@ class RiskMonitorIntegrationTest {
         context.registerBean(DataSourceTransactionManager.class,()->new DataSourceTransactionManager(ds));
         context.registerBean(AccountRepository.class,()->new AccountRepository(jdbc));
         context.registerBean(BalanceRepository.class,()->new BalanceRepository(jdbc));
+        context.registerBean(EffectiveBalanceService.class,()->new EffectiveBalanceService(context.getBean(BalanceRepository.class),context.getBean(AccountRepository.class),null,null,new EffectiveBalanceProperties()));
         context.registerBean(PricingRepository.class,()->new PricingRepository(jdbc));
         provider=mock(TradingProvider.class);
         when(provider.fetchSpotRates(anySet())).thenReturn(List.of());
@@ -68,10 +69,10 @@ class RiskMonitorIntegrationTest {
         context.registerBean(MarketDataRefreshService.class,()->new MarketDataRefreshService(provider,context.getBean(MarketPriceService.class)));
         context.registerBean(PricingService.class,()->new PricingService(jdbcPrices(),context.getBean(MarketPriceService.class),context.getBean(MarketDataRefreshService.class)));
         context.registerBean(MarginRateRepository.class,()->new MarginRateRepository(jdbc));
-        context.registerBean(PositionService.class,()->new PositionService(context.getBean(BalanceRepository.class),context.getBean(PricingService.class),context.getBean(MarginRateRepository.class)));
-        context.registerBean(RiskService.class,()->new RiskService(context.getBean(BalanceRepository.class),context.getBean(PositionService.class),new RiskSnapshotRepository(jdbc)));
+        context.registerBean(PositionService.class,()->new PositionService(context.getBean(EffectiveBalanceService.class),context.getBean(PricingService.class),context.getBean(MarginRateRepository.class)));
+        context.registerBean(RiskService.class,()->new RiskService(context.getBean(EffectiveBalanceService.class),context.getBean(PositionService.class),new RiskSnapshotRepository(jdbc)));
         context.registerBean(RiskMonitorRepository.class,()->new RiskMonitorConfiguration().riskMonitorRepository(jdbc,context.getBean(DataSourceTransactionManager.class),context.getBean(AccountRepository.class),new ObjectMapper().findAndRegisterModules()));
-        context.registerBean(RiskMonitorService.class,()->new RiskMonitorConfiguration().riskMonitorService(context.getBean(RiskMonitorRepository.class),context.getBean(AccountRepository.class),context.getBean(BalanceRepository.class),context.getBean(PricingService.class),context.getBean(MarginRateRepository.class),context.getBean(RiskService.class),config));
+        context.registerBean(RiskMonitorService.class,()->new RiskMonitorConfiguration().riskMonitorService(context.getBean(RiskMonitorRepository.class),context.getBean(AccountRepository.class),context.getBean(EffectiveBalanceService.class),context.getBean(PricingService.class),context.getBean(MarginRateRepository.class),context.getBean(RiskService.class),config));
         context.refresh();
         repository=context.getBean(RiskMonitorRepository.class);service=context.getBean(RiskMonitorService.class);
         accounts=context.getBean(AccountRepository.class);balances=context.getBean(BalanceRepository.class);prices=jdbcPrices();
@@ -119,6 +120,26 @@ class RiskMonitorIntegrationTest {
     @Test void noPositionNeedsNoPricesAndNoMail() {
         assertThat(service.observe(id)).isTrue();assertThat(level()).isEqualTo("NO_POSITION");assertThat(notifications()).isZero();
         verifyNoInteractions(provider);
+    }
+    @Test void enforcedMonitorDiscoversOfficialOnlyPositionAndAuditsUnavailableBalance() {
+        jdbc.update("UPDATE trading_account SET as400_ste='B',as400_nucli_trading=20662 WHERE id=?",id);
+        var official=mock(OfficialTradingBalanceReader.class);
+        var amount=new EnumMap<Asset,BigDecimal>(Asset.class);
+        for(var asset:List.of(Asset.EUR,Asset.XAU,Asset.XAG,Asset.XPT,Asset.XPD)) amount.put(asset,BigDecimal.ZERO);
+        amount.put(Asset.EUR,b("1000"));amount.put(Asset.XAU,b("1"));
+        when(official.read(any(),anyList())).thenReturn(new OfficialTradingBalanceReader.Reading(amount,Map.of()));
+        var mode=new EffectiveBalanceProperties();mode.setMode(EffectiveBalanceProperties.Mode.ENFORCED);mode.setMaxSnapshotAge(java.time.Duration.ofMinutes(2));
+        mode.setOverlayCutoverAt(java.time.Instant.parse("2020-01-01T00:00:00Z"));
+        var effective=new EffectiveBalanceService(balances,accounts,new PendingTradingAdjustmentRepository(jdbc,mode),official,mode);
+        var monitor=new RiskMonitorService(repository,accounts,effective,context.getBean(PricingService.class),context.getBean(MarginRateRepository.class),context.getBean(RiskService.class),config,Clock.systemUTC());
+        assertThat(balances.findAll(id)).isEmpty();
+        monitor.scan();
+        assertThat(level()).isEqualTo("NORMAL");
+        assertThat(jdbc.queryForObject("SELECT indicators->>'positionValuation' FROM trading_risk_monitor_state WHERE account_id=?",String.class,id)).isEqualTo("99.00");
+        when(official.read(any(),anyList())).thenThrow(new IllegalStateException("timeout"));
+        monitor.scan();
+        assertThat(jdbc.queryForObject("SELECT error_code FROM trading_risk_monitor_state WHERE account_id=?",String.class,id)).isEqualTo("OFFICIAL_BALANCE_UNAVAILABLE");
+        assertThat(notifications()).isZero();
     }
     @Test void longShortAndMixedUseRealPricingAndMargin() {
         fund(Asset.EUR,"1000");fund(Asset.XAU,"10");
@@ -498,13 +519,13 @@ class RiskMonitorIntegrationTest {
             public Clock withZone(java.time.ZoneId zone){return this;}
             public Instant instant(){return instant.get();}
         };
-        var monitor=new RiskMonitorService(repository,accounts,balances,context.getBean(PricingService.class),context.getBean(MarginRateRepository.class),context.getBean(RiskService.class),config,clock);
+        var monitor=new RiskMonitorService(repository,accounts,context.getBean(EffectiveBalanceService.class),context.getBean(PricingService.class),context.getBean(MarginRateRepository.class),context.getBean(RiskService.class),config,clock);
         monitor.observe(id);assertThat(notifications()).isEqualTo(1);
         fund(Asset.EUR,"5");
         for(int i=0;i<4;i++) { instant.set(instant.get().plusSeconds(4));assertThat(monitor.observe(id)).isTrue(); }
         assertThat(notifications()).isEqualTo(1);
         fund(Asset.EUR,"-5");instant.set(instant.get().plusSeconds(1));
-        new RiskMonitorService(repository,accounts,balances,context.getBean(PricingService.class),context.getBean(MarginRateRepository.class),context.getBean(RiskService.class),config,clock).observe(id);
+        new RiskMonitorService(repository,accounts,context.getBean(EffectiveBalanceService.class),context.getBean(PricingService.class),context.getBean(MarginRateRepository.class),context.getBean(RiskService.class),config,clock).observe(id);
         assertThat(notifications()).isEqualTo(2);
     }
 

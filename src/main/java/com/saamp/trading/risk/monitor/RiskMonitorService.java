@@ -17,26 +17,34 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public final class RiskMonitorService {
     private final RiskMonitorRepository repository;
     private final AccountRepository accounts;
-    private final BalanceRepository balances;
+    private final EffectiveBalanceService balances;
     private final PricingService pricing;
     private final MarginRateRepository rates;
     private final RiskService risk;
     private final RiskMonitorProperties config;
     private final Clock clock;
-    RiskMonitorService(RiskMonitorRepository repository,AccountRepository accounts,BalanceRepository balances,
+    RiskMonitorService(RiskMonitorRepository repository,AccountRepository accounts,EffectiveBalanceService balances,
             PricingService pricing,MarginRateRepository rates,RiskService risk,RiskMonitorProperties config,Clock clock) {
         this.repository=repository;this.accounts=accounts;this.balances=balances;this.pricing=pricing;
         this.rates=rates;this.risk=risk;this.config=config;this.clock=clock;
     }
     record Observation(long accountId,long version,String fingerprint,Instant at,Level level,
-                       BigDecimal coverage,String indicators,Instant priceAsOf,String error) { }
+                       BigDecimal coverage,String indicators,Instant priceAsOf,String error,EffectiveBalanceSnapshot balances) {
+        Observation(long accountId,long version,String fingerprint,Instant at,Level level,
+                BigDecimal coverage,String indicators,Instant priceAsOf,String error) {
+            this(accountId,version,fingerprint,at,level,coverage,indicators,priceAsOf,error,null);
+        }
+        Observation withBalances(EffectiveBalanceSnapshot snapshot) {
+            return new Observation(accountId,version,fingerprint,at,level,coverage,indicators,priceAsOf,error,snapshot);
+        }
+    }
 
     /** Parcourt les comptes indÃ©pendamment, avec une acquisition rÃ©seau hors transaction. */
     @Scheduled(fixedDelayString="${trading.risk-monitor.interval}")
     public void scan() {
         long after=0;
         while (true) {
-            var ids=repository.candidates(after,config.batchSize());
+            var ids=balances.usesOfficial()?repository.allCandidates(after,config.batchSize()):repository.candidates(after,config.batchSize());
             if (ids.isEmpty()) return;
             for (long id:ids) {
                 try { observe(id); }
@@ -52,14 +60,26 @@ public final class RiskMonitorService {
      * @return vrai si l'observation est encore applicable et persistÃ©e
      * @throws IllegalStateException si une transaction appelante englobe l'acquisition
      */
-    public boolean observe(long id) { return repository.persist(prepare(id),config,clock); }
+    public boolean observe(long id) {
+        var observation=prepare(id);
+        return repository.persist(observation,config,clock,()->{
+            if(observation.balances()!=null) balances.validate(accounts.findById(id).orElseThrow(),observation.balances());
+        });
+    }
 
     Observation prepare(long id) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("Risk Monitor acquisition requires no transaction");
         long version=repository.version(id);
         String fingerprint=repository.fingerprint(id);
         var account=accounts.findById(id).orElseThrow();
-        var snapshot=balances.findAll(id);
+        EffectiveBalanceSnapshot acquired;
+        try { acquired=balances.capture(account); }
+        catch(TradingException failure) {
+            return new Observation(id,version,fingerprint,clock.instant(),null,null,null,null,failure.getCode());
+        }
+        return calculate(id,version,fingerprint,account,balances.forOperation(acquired)).withBalances(acquired);
+    }
+    private Observation calculate(long id,long version,String fingerprint,TradingAccount account,List<Balance> snapshot) {
         var quotes=new EnumMap<Asset,ClientQuote>(Asset.class);
         var margin=new EnumMap<Asset,BigDecimal>(Asset.class);
         Instant priceAsOf=null;

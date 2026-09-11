@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 class PositionServiceTest {
-    private final BalanceRepository balances = mock(BalanceRepository.class);
+    private final EffectiveBalanceService balances = mock(EffectiveBalanceService.class);
     private final PricingService pricing = mock(PricingService.class);
     private final MarginRateRepository marginRates = mock(MarginRateRepository.class);
     private final PositionService service = new PositionService(balances, pricing, marginRates);

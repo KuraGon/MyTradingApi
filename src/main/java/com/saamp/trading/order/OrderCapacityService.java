@@ -18,7 +18,7 @@ import org.springframework.stereotype.Service;
 /** Revalide la capacité sous le verrou compte avec un instantané de prix déjà acquis. */
 @Service
 public class OrderCapacityService {
-    private final BalanceRepository balances;
+    private final EffectiveBalanceService balances;
     private final ReservationRepository reservations;
     private final MarginRateRepository margins;
     private final TradingProperties properties;
@@ -28,7 +28,7 @@ public class OrderCapacityService {
      * @param reservations engagements opposables
      * @param margins taux configurés
      * @param properties fraîcheur admise */
-    public OrderCapacityService(BalanceRepository balances, ReservationRepository reservations,
+    public OrderCapacityService(EffectiveBalanceService balances, ReservationRepository reservations,
                                 MarginRateRepository margins, TradingProperties properties) {
         this.balances=balances; this.reservations=reservations; this.margins=margins; this.properties=properties;
     }
@@ -72,9 +72,19 @@ public class OrderCapacityService {
     public Admission reserve(TradingAccount account, TradingOrder order, Map<Asset,ClientQuote> quotes,
                              Map<Asset,ClientQuote> limitQuotes, AssetConfig config,
                              OffsetDateTime expiry, boolean execution) {
+        return reserve(account,order,quotes,limitQuotes,config,expiry,execution,null);
+    }
+
+    /** Valide localement une acquisition effectuée avant le verrou ACCOUNT.
+     * @param account compte @param order ordre @param quotes prix risque @param limitQuotes prix limites
+     * @param config actif @param expiry échéance @param execution submit @param acquired snapshot
+     * @return engagements @throws TradingException si snapshot ou capacité invalides */
+    public Admission reserve(TradingAccount account, TradingOrder order, Map<Asset,ClientQuote> quotes,
+            Map<Asset,ClientQuote> limitQuotes, AssetConfig config, OffsetDateTime expiry, boolean execution,
+            EffectiveBalanceSnapshot acquired) {
         if (reservations.hasActiveTransmittedLegacy(account.id()))
             throw failure("LEGACY_COMMITMENT_UNRESOLVED","Un engagement historique transmis doit être résolu avant une nouvelle admission");
-        var snapshot=balances.findAll(account.id());
+        var snapshot=acquired==null?balances.findAll(account.id()):balances.validate(account,acquired);
         BigDecimal funds=BigDecimal.ZERO;
         BigDecimal position=BigDecimal.ZERO;
         var valued=new ArrayList<AccountPosition>();

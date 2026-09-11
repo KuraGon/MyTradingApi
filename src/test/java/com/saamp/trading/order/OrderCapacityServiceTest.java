@@ -18,7 +18,7 @@ import static org.mockito.ArgumentMatchers.*;
 
 /** Distingue les limites historiques des prix client de la capacité B, jusque dans les arrondis. */
 class OrderCapacityServiceTest {
-    BalanceRepository balances=mock(BalanceRepository.class);
+    EffectiveBalanceService balances=mock(EffectiveBalanceService.class);
     ReservationRepository reservations=mock(ReservationRepository.class);
     MarginRateRepository margins=mock(MarginRateRepository.class);
     TradingAccount account=mock(TradingAccount.class);

@@ -11,7 +11,7 @@ import java.util.List;
 /** Prépare les positions consultables sans exposer les prix bruts utilisés en interne. */
 @Service
 public class PositionService {
-    private final BalanceRepository balances;
+    private final EffectiveBalanceService balances;
     private final PricingService pricing;
     private final MarginRateRepository marginRates;
 
@@ -22,7 +22,7 @@ public class PositionService {
      * @param pricing tarification client avec contrôle de fraîcheur
      * @param marginRates taux applicables au compte et au métal
      */
-    public PositionService(BalanceRepository balances, PricingService pricing, MarginRateRepository marginRates) {
+    public PositionService(EffectiveBalanceService balances, PricingService pricing, MarginRateRepository marginRates) {
         this.balances = balances;
         this.pricing = pricing;
         this.marginRates = marginRates;

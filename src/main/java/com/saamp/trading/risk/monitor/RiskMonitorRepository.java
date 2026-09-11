@@ -25,6 +25,9 @@ public final class RiskMonitorRepository {
     record Event(UUID id, long accountId, long sequence, Level level, String indicators,
                  Instant priceAsOf, Instant createdAt, String reason, UUID token, int attempts) { }
 
+    List<Long> allCandidates(long after, int limit) {
+        return jdbc.queryForList("SELECT id FROM trading_account WHERE id>? ORDER BY id LIMIT ?",Long.class,after,limit);
+    }
     List<Long> candidates(long after, int limit) {
         return jdbc.queryForList("""
             SELECT a.id FROM trading_account a WHERE a.id>? AND
@@ -61,9 +64,13 @@ public final class RiskMonitorRepository {
     }
 
     boolean persist(RiskMonitorService.Observation observation, RiskMonitorProperties config, java.time.Clock clock) {
+        return persist(observation,config,clock,()->{});
+    }
+    boolean persist(RiskMonitorService.Observation observation, RiskMonitorProperties config, java.time.Clock clock,Runnable validate) {
         return Boolean.TRUE.equals(tx.execute(status -> {
             long id=observation.accountId();
             if (accounts.lockById(id).isEmpty()) return false;
+            validate.run();
             State old=state(id);
             if (old.version()!=observation.version() || !fingerprint(id).equals(observation.fingerprint())
                     || old.calculatedAt()!=null && !observation.at().isAfter(old.calculatedAt())) return false;

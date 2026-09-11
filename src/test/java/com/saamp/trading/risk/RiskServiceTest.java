@@ -16,7 +16,7 @@ import static org.mockito.Mockito.*;
 /** Vérifie le raccord réel entre liquidation client, positions et synthèse de risque. */
 class RiskServiceTest {
     private static final OffsetDateTime AS_OF=OffsetDateTime.parse("2026-09-07T10:00:00Z");
-    private final BalanceRepository balances=mock(BalanceRepository.class);
+    private final EffectiveBalanceService balances=mock(EffectiveBalanceService.class);
     private final MarginRateRepository margins=mock(MarginRateRepository.class);
     private final PricingRepository pricingRepository=mock(PricingRepository.class);
     private final MarketPriceService market=mock(MarketPriceService.class);

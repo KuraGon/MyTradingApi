@@ -53,7 +53,7 @@ class OrderExecutionServiceTest {
         when(configs.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(new AssetConfig(Asset.XAU,new BigDecimal("0.000001"),6,new BigDecimal("0.002"),true)));
         when(orders.markPending(123)).thenReturn(1);
         when(provider.submitSpotOrder(any())).thenReturn(new OrderAcknowledgement(AcknowledgementState.IN_PROCESS,"CL-123",null,null,null,null));
-        service=new OrderExecutionService(accounts,balances,configs,pricing,reservations,orders,provider,events,gate,capacity,
+        service=new OrderExecutionService(accounts,new EffectiveBalanceService(balances,accounts,null,null,new EffectiveBalanceProperties()),configs,pricing,reservations,orders,provider,events,gate,capacity,
                 new TradingProperties(),mock(PlatformTransactionManager.class));
     }
 
@@ -63,13 +63,13 @@ class OrderExecutionServiceTest {
         sequence.verify(pricing).quoteForExecution(42,Asset.XAU,Asset.EUR);
         sequence.verify(accounts).lockById(7);
         sequence.verify(orders).lockById(123);
-        sequence.verify(capacity).reserve(eq(account),eq(order),anyMap(),any(),any(),eq(true));
+        sequence.verify(capacity).reserve(eq(account),eq(order),anyMap(),anyMap(),any(),any(),eq(true),any());
         sequence.verify(orders).markPending(123);
         sequence.verify(provider).submitSpotOrder(any());
     }
 
     @Test void changedCapacityNeverTransmits() {
-        when(capacity.reserve(any(),any(),anyMap(),any(),any(),eq(true)))
+        when(capacity.reserve(any(),any(),anyMap(),anyMap(),any(),any(),eq(true),any()))
                 .thenThrow(new TradingException(org.springframework.http.HttpStatus.CONFLICT,"INSUFFICIENT_FREE_EQUITY","test"));
         assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOf(TradingException.class);
         verify(provider,never()).submitSpotOrder(any()); verify(orders,never()).markPending(anyLong());

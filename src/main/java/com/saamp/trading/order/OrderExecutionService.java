@@ -19,7 +19,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class OrderExecutionService {
     private final AccountRepository accounts;
-    private final BalanceRepository balances;
+    private final EffectiveBalanceService balances;
     private final PricingRepository pricingRepository;
     private final PricingService pricing;
     private final ReservationRepository reservationRepository;
@@ -50,7 +50,7 @@ public class OrderExecutionService {
      * @param properties échéances
      * @param transactionManager transactions locales
      */
-    public OrderExecutionService(AccountRepository accounts, BalanceRepository balances, PricingRepository pricingRepository,
+    public OrderExecutionService(AccountRepository accounts, EffectiveBalanceService balances, PricingRepository pricingRepository,
                                  PricingService pricing, ReservationRepository reservationRepository, OrderRepository orders,
                                  TradingProvider provider, ExecutionEventHandler executionEvents, ExecutionGateRepository gate,
                                  OrderCapacityService capacity, TradingProperties properties, PlatformTransactionManager transactionManager) {
@@ -74,11 +74,12 @@ public class OrderExecutionService {
     public OrderPreviewResponse preview(long companyId,long userId,OrderPreviewRequest request) {
         TradingAccount account=accountForCompany(companyId);
         ensureTradingAllowed(account);
+        var balanceSnapshot=balances.capture(account);
         var existing=orders.findByIdempotencyKey(request.idempotencyKey());
         if (existing.isPresent()) { ensureOwnership(existing.get(),companyId); return replay(existing.get()); }
         BigDecimal qty=TroyWeightConverter.toTroyOunces(request.quantity(),request.unit());
-        var quotes=quotes(account,request.asset(),false);
-        var limitQuotes=account.positionLimit()==null?quotes:quotes(account,request.asset(),true);
+        var quotes=quotes(account,request.asset(),false,balances.forOperation(balanceSnapshot));
+        var limitQuotes=account.positionLimit()==null?quotes:quotes(account,request.asset(),true,balances.forOperation(balanceSnapshot));
         return transactions.execute(status->{
             var locked=accounts.lockById(account.id()).orElseThrow();
             ensureTradingAllowed(locked);
@@ -99,7 +100,7 @@ public class OrderExecutionService {
             }
             var order=orders.lockById(id).orElseThrow();
             var expiry=order.createdAt().plus(properties.getReservations().getTtl());
-            var admission=capacity.reserve(locked,order,quotes,limitQuotes,config,expiry,false);
+            var admission=capacity.reserve(locked,order,quotes,limitQuotes,config,expiry,false,balanceSnapshot);
             return new OrderPreviewResponse(id,request.asset(),request.side(),qty,quote.pair(),indicative,
                     quote.priceAsOf(),expiry,admission.cash(),admission.close());
         });
@@ -125,7 +126,8 @@ public class OrderExecutionService {
         if (!provider.supportsSpotOrderSubmission()) throw failure("PROVIDER_EXECUTION_NOT_READY","Transmission SPOT désactivée",HttpStatus.SERVICE_UNAVAILABLE);
         if (transmitted(initial)) return initial;
         if (initial.status()!=OrderStatus.DRAFT) throw failure("ORDER_NOT_SUBMITTABLE","Ordre non transmissible",HttpStatus.CONFLICT);
-        var quotes=quotes(account,initial.asset(),true);
+        var balanceSnapshot=balances.capture(account);
+        var quotes=quotes(account,initial.asset(),true,balances.forOperation(balanceSnapshot));
         var admitted=transactions.execute(status->{
             var lockedAccount=accounts.lockById(account.id()).orElseThrow();
             var order=orders.lockById(orderId).orElseThrow();
@@ -148,7 +150,7 @@ public class OrderExecutionService {
                 return new Submission(order,lockedAccount,false,new TradingException(HttpStatus.CONFLICT,"PRICE_MOVED",
                         "Nouvelle cotation requise",Map.of("currentClientPrice",price,"priceAsOf",fresh.priceAsOf(),"pair",fresh.pair())));
             }
-            capacity.reserve(lockedAccount,order,quotes,config,expiry,true);
+            capacity.reserve(lockedAccount,order,quotes,quotes,config,expiry,true,balanceSnapshot);
             if (orders.markPending(orderId)!=1) throw new IllegalStateException("Concurrent order transition");
             return new Submission(order,lockedAccount,true,null);
         });
@@ -169,9 +171,9 @@ public class OrderExecutionService {
         return orders.findById(orderId).orElseThrow();
     }
 
-    private Map<Asset,ClientQuote> quotes(TradingAccount account,Asset traded,boolean execution) {
+    private Map<Asset,ClientQuote> quotes(TradingAccount account,Asset traded,boolean execution,List<Balance> snapshot) {
         var assets=EnumSet.of(traded);
-        for (var balance:balances.findAll(account.id()))
+        for (var balance:snapshot)
             if (balance.asset().isMetal() && balance.quantity().signum()!=0) assets.add(balance.asset());
         for (var commitment:reservationRepository.activeCloseCommitments(account.id(),-1))
             if (commitment.transmitted()) assets.add(commitment.asset());

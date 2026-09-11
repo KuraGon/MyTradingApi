@@ -8,7 +8,7 @@ Cette base implémente le socle de la spécification **MyTrading Lot 2 — Tradi
 
 - compte Trading par `company_id`, EUR/USD ;
 - soldes unifiés devise + XAU/XAG/XPT/XPD ;
-- protection PostgreSQL interdisant tout solde devise négatif ;
+- projection transactionnelle PostgreSQL signée ; capacité contrôlée avant engagement, par EffectiveBalance en mode ENFORCED ;
 - ledger append-only et projection des soldes ;
 - transferts externes idempotents par `external_ref` ;
 - réservations persistantes avec expiration, sans transaction longue ;
@@ -284,7 +284,7 @@ Le code ne crée pas de contrôleur back-office par `accountId` avec le JWT clie
 
 La v0.2 intègre les corrections issues de la revue du Lot 2 v0.1 : arrondi financier StoneX au centime, prix d'exécution frais pour `position_limit`, et tests des invariants qui protègent les soldes et les ordres.
 
-Les tests PostgreSQL utilisent Testcontainers et sont automatiquement ignorés sur un poste sans moteur Docker. En CI ou sur un poste avec Docker, ils appliquent réellement les changelogs Liquibase et vérifient les deux déclencheurs critiques.
+Les tests PostgreSQL utilisent LocalPostgres sur des schémas saamp_test_* de l'instance locale historique, sans Docker ni test ignoré. Ils appliquent le master Liquibase réel, contrôlent le ledger append-only et la projection signée introduite par 014. La connexion loopback de test désactive uniquement la négociation SSL opportuniste ; public reste hors périmètre des écritures.
 
 ```bash
 mvn clean test
@@ -304,3 +304,7 @@ mvn clean package
 - `401/403` ferment l'execution gate ;
 - environnement et expiration du TokenID contrôlés au démarrage du provider ;
 - `/Trade` demeure volontairement désactivé jusqu'au TokenID UAT.
+
+## Effective Balance
+
+Voir [EFFECTIVE_BALANCE.md](EFFECTIVE_BALANCE.md) : identité NUCLI trading unique, modes LEGACY/SHADOW/ENFORCED et migration 014 indissociable du code d'admission.

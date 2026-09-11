@@ -103,15 +103,10 @@ class TradingDatabaseInvariantTest {
     }
 
     @Test
-    void databaseTriggerRejectsNegativeCurrencyBalanceEvenWhenServiceIsBypassed() {
+    void signedCurrencyProjectionIsAllowedAfter014() {
         long accountId = createAccount(COMPANY_IDS.incrementAndGet());
-        jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,?,?)", accountId, "EUR", new BigDecimal("10.000000"));
-
-        assertThatThrownBy(() -> jdbc.update("UPDATE trading_balance SET quantity=-0.000001 WHERE account_id=? AND asset='EUR'", accountId))
-                .isInstanceOf(DataAccessException.class);
-
-        BigDecimal quantity = jdbc.queryForObject("SELECT quantity FROM trading_balance WHERE account_id=? AND asset='EUR'", BigDecimal.class, accountId);
-        assertThat(quantity).isEqualByComparingTo("10.000000");
+        jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,'EUR',-0.000001)",accountId);
+        assertThat(jdbc.queryForObject("SELECT quantity FROM trading_balance WHERE account_id=? AND asset='EUR'",BigDecimal.class,accountId)).isEqualByComparingTo("-0.000001");
     }
 
     @Test
@@ -200,7 +195,6 @@ class TradingDatabaseInvariantTest {
                 ORDER BY tgname
                 """, String.class);
         assertThat(triggers).containsExactly(
-                "trg_trading_balance_currency_non_negative",
                 "trg_trading_ledger_append_only");
 
         Integer providerTable = jdbc.queryForObject(
@@ -514,7 +508,7 @@ class TradingDatabaseInvariantTest {
 
         @Bean
         ReservationService reservationService(BalanceRepository balances, ReservationRepository reservations, TradingProperties properties) {
-            return new ReservationService(balances, reservations, properties);
+            return new ReservationService(balances, reservations, properties, new com.saamp.trading.account.EffectiveBalanceService(balances,null,null,null,new com.saamp.trading.account.EffectiveBalanceProperties()));
         }
 
         @Bean

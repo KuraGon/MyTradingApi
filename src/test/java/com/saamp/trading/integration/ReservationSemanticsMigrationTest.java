@@ -55,10 +55,10 @@ class ReservationSemanticsMigrationTest {
         }
     }
 
-    @Test void completeInstallationUsesTheRealMasterThrough013() throws Exception {
+    @Test void completeInstallationUsesTheRealMasterThrough014() throws Exception {
         try (var fixture=new Schema()) {
             migrate(fixture.source,fixture.name,"db.changelog-master.yaml");
-            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(13);
+            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(14);
             assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=? AND table_name='trading_reservation' AND column_name='reservation_kind' AND is_nullable='NO'",Integer.class,fixture.name)).isEqualTo(1);
         }
     }
@@ -94,6 +94,22 @@ class ReservationSemanticsMigrationTest {
             fixture.jdbc.update("UPDATE trading_order SET stonex_error_code='PROVIDER_UNCERTAIN' WHERE id=1");
             fixture.jdbc.update("UPDATE trading_order SET stonex_error_code='MANUAL_REVIEW_REQUIRED' WHERE id=1");
             assertThat(fixture.jdbc.queryForObject("SELECT stonex_error_code FROM trading_order WHERE id=1",String.class)).isEqualTo("MANUAL_REVIEW_REQUIRED");
+        }
+    }
+
+    @Test void upgrade013To014PreservesDataAndAllowsSignedCurrencyProjection() throws Exception {
+        try(var fixture=new Schema()) {
+            migrateCount(fixture.connection,fixture.name,13);
+            fixture.jdbc.update("INSERT INTO trading_account(id,company_id,base_currency,status) VALUES (1,1,'EUR','ACTIVE')");
+            fixture.jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (1,'EUR',10),(1,'XAU',-1)");
+            var data=fixture.jdbc.queryForList("SELECT * FROM trading_balance ORDER BY asset");
+            var history=fixture.jdbc.queryForList("SELECT id,md5sum FROM databasechangelog ORDER BY orderexecuted");
+            assertThatThrownBy(()->fixture.jdbc.update("UPDATE trading_balance SET quantity=-1 WHERE asset='EUR'")).isInstanceOf(org.springframework.dao.DataAccessException.class);
+            migrateCount(fixture.connection,fixture.name,1);
+            assertThat(fixture.jdbc.queryForList("SELECT * FROM trading_balance ORDER BY asset")).isEqualTo(data);
+            assertThat(fixture.jdbc.queryForList("SELECT id,md5sum FROM databasechangelog WHERE orderexecuted<=13 ORDER BY orderexecuted")).isEqualTo(history);
+            fixture.jdbc.update("UPDATE trading_balance SET quantity=-1 WHERE asset='EUR'");
+            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM pg_trigger WHERE tgrelid='trading_ledger_entry'::regclass AND tgname='trg_trading_ledger_append_only'",Integer.class)).isEqualTo(1);
         }
     }
 
