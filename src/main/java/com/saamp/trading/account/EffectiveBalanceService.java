@@ -24,6 +24,7 @@ public class EffectiveBalanceService {
     private final EffectiveBalanceProperties config;
     private final ShadowBalanceDiagnostics shadow = new ShadowBalanceDiagnostics();
     private final EffectiveBalanceTelemetry telemetry;
+    private final OfficialBalanceAvailability availability = new OfficialBalanceAvailability();
     /** @param projection historique interne @param accounts identité trading @param adjustments faits persistés
      * @param official lecture officielle @param config mode et fraîcheur technique */
     public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
@@ -49,6 +50,18 @@ public class EffectiveBalanceService {
     public boolean enforced() { return config.getMode()==EffectiveBalanceProperties.Mode.ENFORCED; }
     /** @return nécessité de rechercher aussi les positions existant uniquement dans AS400 */
     public boolean usesOfficial() { return config.getMode()!=EffectiveBalanceProperties.Mode.LEGACY; }
+    /** @param account compte LIVE authentifié @return disponibilité récente ; jamais d'attente DB2 */
+    public boolean officialAvailable(TradingAccount account) {
+        AccountService.requireMode(account, TradingMode.LIVE);
+        Instant now = Instant.now();
+        Boolean recent = availability.recent(account, now);
+        if (!availability.refreshDue(account, now)) return Boolean.TRUE.equals(recent);
+        shadow.submit(() -> {
+            try { return captureDiagnostic(account, true).available(); }
+            catch (RuntimeException failure) { return false; }
+        });
+        return Boolean.TRUE.equals(recent);
+    }
     /** @param accountId compte @return soldes selon le mode, sans fallback en ENFORCED */
     public List<Balance> findAll(long accountId) {
 
@@ -101,11 +114,15 @@ public class EffectiveBalanceService {
     // Seul le diagnostic SHADOW en arriere-plan appelle cette collecte synchrone ;
     // ENFORCED la garde obligatoirement dans le fil de l'operation.
     EffectiveBalanceSnapshot captureDiagnostic(TradingAccount account) {
+        return captureDiagnostic(account, false);
+    }
+
+    private EffectiveBalanceSnapshot captureDiagnostic(TradingAccount account, boolean probe) {
         if (account.accountMode()==TradingMode.DEMO) return captureForOperation(account,TradingMode.DEMO);
         config.validateConfiguration();
         Instant start=Instant.now();
-        if(!usesOfficial()) return snapshot(account,start,true,null,List.of(),Map.of(),Map.of(),Map.of(),List.of(),projection.findAll(account.id()),false);
-        boolean enforced=config.getMode()==EffectiveBalanceProperties.Mode.ENFORCED;
+        if(!usesOfficial() && !probe) return snapshot(account,start,true,null,List.of(),Map.of(),Map.of(),Map.of(),List.of(),projection.findAll(account.id()),false);
+        boolean enforced=probe || config.getMode()==EffectiveBalanceProperties.Mode.ENFORCED;
         long captureStart=System.nanoTime(), officialNanos=0;
         int factCount=0;
         boolean available=false;
@@ -131,8 +148,8 @@ public class EffectiveBalanceService {
             OfficialTradingBalanceReader.Reading first,second;
             long officialStart=System.nanoTime();
             try {
-                first=official.read(account,facts);
-                second=official.read(account,facts);
+                first=probe ? official.readDiagnostic(account,facts) : official.read(account,facts);
+                second=probe ? official.readDiagnostic(account,facts) : official.read(account,facts);
             } finally { officialNanos=System.nanoTime()-officialStart; }
             reason="INCONSISTENT_OR_EXPIRED_SNAPSHOT";
             if(!first.equals(second) || !facts.equals(adjustments.read(account.id()))
@@ -165,6 +182,7 @@ public class EffectiveBalanceService {
             }
             return snapshot(account,start,false,"OFFICIAL_BALANCE_UNAVAILABLE",List.of(),Map.of(),Map.of(),Map.of(),List.of(),projection.findAll(account.id()),false);
         } finally {
+            availability.record(account,start,Instant.now(),available);
             telemetry.record(account.id(),config.getMode(),available,System.nanoTime()-captureStart,officialNanos,factCount,reason);
         }
     }
@@ -185,7 +203,10 @@ public class EffectiveBalanceService {
         if(snapshot.accountId()!=account.id() || !Objects.equals(snapshot.ste(),account.as400Ste())
                 || !Objects.equals(snapshot.nucliTrading(),account.as400NucliTrading()) || account.baseCurrency()!=Asset.EUR
                 || !snapshot.available() || !Instant.now().isBefore(snapshot.startedAt().plus(config.getMaxSnapshotAge()))
-                || !snapshot.facts().equals(adjustments.read(account.id()))) throw unavailable();
+                || !snapshot.facts().equals(adjustments.read(account.id()))) {
+            Instant failedAt=Instant.now(); availability.record(account,failedAt,failedAt,false);
+            throw unavailable();
+        }
         return snapshot.decisionBalances();
     }
     /** Revalidates a DEMO decision only against its local projection. */

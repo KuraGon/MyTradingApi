@@ -21,6 +21,10 @@ public class ShadowBalanceJdbcConfiguration {
 
     @Bean("shadowBalanceJdbcTemplate")
     JdbcTemplate shadowBalanceJdbcTemplate(@Qualifier("as400JdbcTemplate") JdbcTemplate original) {
+        return boundedTemplate(original);
+    }
+
+    static JdbcTemplate boundedTemplate(JdbcTemplate original) {
         var source = (DriverManagerDataSource) original.getDataSource();
         var bounded = new DriverManagerDataSource() {
             @Override protected Connection getConnectionFromDriverManager(String url, Properties properties) throws SQLException {

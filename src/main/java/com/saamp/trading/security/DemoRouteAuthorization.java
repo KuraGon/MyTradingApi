@@ -14,7 +14,8 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
 public final class DemoRouteAuthorization implements AuthorizationManager<RequestAuthorizationContext> {
     private static final String ACCOUNT = "/api/v1/accounts/me";
     private static final Set<String> READS = Set.of(ACCOUNT, ACCOUNT + "/balances", ACCOUNT + "/positions",
-            ACCOUNT + "/summary", ACCOUNT + "/prices", ACCOUNT + "/orders", ACCOUNT + "/statement");
+            ACCOUNT + "/summary", ACCOUNT + "/prices", ACCOUNT + "/orders", ACCOUNT + "/statement",
+            "/api/v1/platform/status");
     private final Environment environment;
 
     /** @param environment runtime reel, prioritaire sur le contexte du token */

@@ -13,4 +13,10 @@ public interface OfficialTradingBalanceReader {
     /** @param account identité trading @param adjustments faits à corréler
      * @return soldes et état CLIENT @throws RuntimeException si la lecture n'est pas exploitable */
     Reading read(TradingAccount account, List<PendingTradingAdjustmentRepository.Adjustment> adjustments);
+
+    /** @param account identité trading @param adjustments faits à corréler
+     * @return même lecture pour diagnostic ; l'implémentation JDBC impose des timeouts courts */
+    default Reading readDiagnostic(TradingAccount account, List<PendingTradingAdjustmentRepository.Adjustment> adjustments) {
+        return read(account, adjustments);
+    }
 }

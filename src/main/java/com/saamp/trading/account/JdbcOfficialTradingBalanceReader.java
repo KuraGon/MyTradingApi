@@ -15,6 +15,9 @@ import org.springframework.stereotype.Component;
 public class JdbcOfficialTradingBalanceReader implements OfficialTradingBalanceReader {
     private final ObjectProvider<JdbcTemplate> source;
     private final ObjectProvider<JdbcTemplate> shadowSource;
+    @org.springframework.beans.factory.annotation.Autowired
+    @Qualifier("platformBalanceJdbcTemplate")
+    private ObjectProvider<JdbcTemplate> diagnosticSource;
     /** @param source datasource IBM i explicite ; son absence ne signifie jamais zéro
      * @param shadowSource connexion bornee exclusivement presente en mode SHADOW */
     public JdbcOfficialTradingBalanceReader(@Qualifier("as400JdbcTemplate") ObjectProvider<JdbcTemplate> source,
@@ -27,6 +30,17 @@ public class JdbcOfficialTradingBalanceReader implements OfficialTradingBalanceR
         AccountService.requireMode(account, com.saamp.trading.domain.TradingMode.LIVE);
         var jdbc=shadowSource.getIfAvailable();
         if(jdbc==null) jdbc=source.getIfAvailable();
+        return readUsing(jdbc,account,adjustments);
+    }
+
+    /** @param account compte LIVE @param adjustments faits CLIENT
+     * @return lecture bornée dédiée au statut, sans repli sur une connexion non bornée */
+    @Override public Reading readDiagnostic(TradingAccount account, List<PendingTradingAdjustmentRepository.Adjustment> adjustments) {
+        AccountService.requireMode(account, com.saamp.trading.domain.TradingMode.LIVE);
+        return readUsing(diagnosticSource == null ? null : diagnosticSource.getIfAvailable(),account,adjustments);
+    }
+
+    private Reading readUsing(JdbcTemplate jdbc, TradingAccount account, List<PendingTradingAdjustmentRepository.Adjustment> adjustments) {
         if(jdbc==null) throw new IllegalStateException("AS400_NOT_CONFIGURED");
         try(Connection connection=Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
             connection.setReadOnly(true);

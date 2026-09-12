@@ -26,7 +26,7 @@ class DemoRouteAuthorizationIntegrationTest {
     @MockitoBean JwtDecoder decoder;
 
     @ParameterizedTest
-    @ValueSource(strings={"GET /api/v1/accounts/me", "GET /api/v1/accounts/me/balances",
+    @ValueSource(strings={"GET /api/v1/platform/status", "GET /api/v1/accounts/me", "GET /api/v1/accounts/me/balances",
         "GET /api/v1/accounts/me/positions", "GET /api/v1/accounts/me/summary", "GET /api/v1/accounts/me/prices",
         "GET /api/v1/accounts/me/orders", "GET /api/v1/accounts/me/orders/12", "GET /api/v1/accounts/me/statement",
         "POST /api/v1/accounts/me/orders/preview", "POST /api/v1/accounts/me/orders/12/submit"})
