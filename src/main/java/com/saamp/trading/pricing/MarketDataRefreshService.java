@@ -21,25 +21,14 @@ public class MarketDataRefreshService {
         this.prices = prices;
     }
 
-    /** Refreshes one required pair. PMXConnect internally reads both MTL and FOR to keep one coherent snapshot. */
+    /** Refreshes the required pair through the provider's pair-aware runtime path. */
     public void refresh(String pair) {
-        List<MarketQuote> quotes = provider.fetchSpotRates(Set.of());
+        List<MarketQuote> quotes = provider.fetchSpotRates(Set.of(pair));
         MarketQuote quote = quotes.stream().filter(q -> pair.equalsIgnoreCase(q.pair())).findFirst()
                 .orElseThrow(() -> new TradingException(HttpStatus.SERVICE_UNAVAILABLE,
                         "MARKET_PRICE_MISSING", "Le fournisseur n'a pas retourné de prix pour " + pair));
-        // The PMX provider returns the merged MTL+FOR snapshot. Store the complete snapshot,
-        // not only the requested pair, so FX valuation is available from the same price_as_of.
+        // A provider call receives a de-duplicated set of required pairs, then its returned snapshot is persisted once.
         quotes.forEach(this::store);
-    }
-
-    /**
-     * Refreshes the complete provider snapshot. For PMXConnect this merges GetSpotRates/MTL and
-     * GetSpotRates/FOR; all returned quotes share the same provider reference timestamp.
-     */
-    public int refreshAll() {
-        List<MarketQuote> quotes = provider.fetchSpotRates(Set.of());
-        quotes.forEach(this::store);
-        return quotes.size();
     }
 
     private void store(MarketQuote quote) {

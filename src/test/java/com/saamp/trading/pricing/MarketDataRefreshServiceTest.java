@@ -23,17 +23,18 @@ class MarketDataRefreshServiceTest {
     @Mock MarketPriceService prices;
 
     @Test
-    void singlePairRefreshStoresWholeMergedSnapshotIncludingFx() {
+    void singlePairRefreshUsesThePairAwareProviderPathOnce() {
         OffsetDateTime asOf = OffsetDateTime.parse("2026-08-20T12:00:00Z");
-        when(provider.fetchSpotRates(Set.of())).thenReturn(List.of(
-                new MarketQuote("XAUEUR", new BigDecimal("3825.493"), new BigDecimal("3826.856"), null, asOf),
-                new MarketQuote("EURUSD", new BigDecimal("1.16828"), new BigDecimal("1.16953"), null, asOf)));
+        when(provider.fetchSpotRates(Set.of("XAUEUR"))).thenReturn(List.of(
+                new MarketQuote("XAUEUR", new BigDecimal("3825.493"), new BigDecimal("3826.856"), null, asOf)));
 
         new MarketDataRefreshService(provider, prices).refresh("XAUEUR");
 
         ArgumentCaptor<MarketPrice> captor = ArgumentCaptor.forClass(MarketPrice.class);
-        verify(prices, times(2)).store(captor.capture());
-        assertThat(captor.getAllValues()).extracting(MarketPrice::pair).containsExactly("XAUEUR", "EURUSD");
+        verify(provider).fetchSpotRates(Set.of("XAUEUR"));
+        verify(provider).sourceName();
+        verify(prices).store(captor.capture());
+        assertThat(captor.getAllValues()).extracting(MarketPrice::pair).containsExactly("XAUEUR");
         assertThat(captor.getAllValues()).allSatisfy(p -> assertThat(p.priceAsOf()).isEqualTo(asOf));
     }
 }

@@ -10,6 +10,9 @@ import com.saamp.trading.provider.ExecutionReport;
 import com.saamp.trading.provider.ExecutionState;
 import com.saamp.trading.provider.MarketQuote;
 import com.saamp.trading.provider.ProviderPosition;
+import com.saamp.trading.provider.AcknowledgementState;
+import com.saamp.trading.provider.OrderAcknowledgement;
+import com.saamp.trading.provider.SpotOrderRequest;
 import com.saamp.trading.domain.Asset;
 
 import java.math.BigDecimal;
@@ -120,6 +123,30 @@ public final class PmxConnectJson {
                     executionId, fillPrice, errorCode, errorMessage);
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("Réponse PMXConnect GetRequestStatus illisible", e);
+        }
+    }
+
+    /** Parses the MySAAMP-compatible successful /Trade payload and fails closed. */
+    public OrderAcknowledgement readTradeAcknowledgement(String json, SpotOrderRequest request) {
+        try {
+            JsonNode payload = unwrapResult(mapper.readTree(json));
+            String returnedClOrdId = firstText(payload, "ClOrdId", "ClientOrderId");
+            String executionId = firstText(payload, "EXID", "ExID", "ExecutionId", "ExecId");
+            BigDecimal quantity = firstDecimal(payload, "Quantity");
+            BigDecimal rate = firstDecimal(payload, "Rate");
+            if (executionId == null || executionId.isBlank() || quantity == null || rate == null) {
+                throw new IllegalArgumentException("Réponse PMXConnect Trade incomplète");
+            }
+            if (returnedClOrdId != null && !request.clientOrderId().equals(returnedClOrdId)) {
+                throw new IllegalArgumentException("Réponse PMXConnect Trade associée à un autre ClOrdId");
+            }
+            if (quantity.compareTo(request.quantityOz()) != 0) {
+                throw new IllegalArgumentException("Réponse PMXConnect Trade avec quantité incohérente");
+            }
+            return new OrderAcknowledgement(AcknowledgementState.FILLED, request.clientOrderId(), executionId,
+                    rate, null, null);
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("Réponse PMXConnect Trade illisible", e);
         }
     }
 

@@ -2,12 +2,13 @@ package com.saamp.trading.provider;
 
 import com.saamp.trading.config.TradingProperties;
 import com.saamp.trading.domain.TradingMode;
-import com.saamp.trading.security.TradingDemoGuard;
 import com.saamp.trading.order.ExecutionGateRepository;
 import com.saamp.trading.provider.pmx.PmxConnectException;
 import com.saamp.trading.provider.pmx.PmxConnectJson;
 import com.saamp.trading.provider.pmx.PmxTokenInfo;
 import com.saamp.trading.provider.pmx.PmxTokenInspector;
+import com.saamp.trading.security.TradingDemoGuard;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -32,9 +33,8 @@ import java.util.Set;
 /**
  * StoneX PMXConnect v1_3 adapter based on production-observed read payloads.
  *
- * <p>Spot rates, positions and request-status resolution are implemented. Spot order submission
- * remains deliberately disabled until a UAT TokenID is available: the production token must never
- * be used to discover the /Trade response schema.</p>
+ * <p>Spot rates, positions, request-status resolution and the MySAAMP-compatible direct
+ * /Trade contract are implemented. Execution remains gated by the persisted execution gate.</p>
  */
 @Component
 @ConditionalOnProperty(name = "trading.provider.mode", havingValue = "PMXCONNECT")
@@ -50,13 +50,22 @@ public class PmxConnectTradingProvider implements TradingProvider {
     private final PmxTokenInfo tokenInfo;
     private final TradingDemoGuard demoGuard;
 
+    /** Test-compatible constructor; Spring uses the guarded constructor below. */
     public PmxConnectTradingProvider(TradingProperties properties,
                                      ExecutionGateRepository executionGate,
                                      ProviderAccountRepository providerAccounts) {
+        this(properties, executionGate, providerAccounts, new TradingDemoGuard(properties));
+    }
+
+    @Autowired
+    public PmxConnectTradingProvider(TradingProperties properties,
+                                     ExecutionGateRepository executionGate,
+                                     ProviderAccountRepository providerAccounts,
+                                     TradingDemoGuard demoGuard) {
         this.config = properties.getProvider().getPmx();
-        this.demoGuard = new TradingDemoGuard(properties);
         this.executionGate = executionGate;
         this.providerAccounts = providerAccounts;
+        this.demoGuard = demoGuard;
         this.json = new PmxConnectJson();
         validateConfiguration();
         this.tokenInfo = validateToken();
@@ -69,10 +78,25 @@ public class PmxConnectTradingProvider implements TradingProvider {
     public String sourceName() { return PROVIDER; }
 
     @Override
-    public boolean supportsSpotOrderSubmission() { return false; }
+    public boolean supportsSpotOrderSubmission() { return true; }
 
     @Override
     public List<MarketQuote> fetchSpotRates(Set<String> pairs) {
+        if (pairs != null && !pairs.isEmpty()) {
+            OffsetDateTime commonAsOf = OffsetDateTime.now(ZoneOffset.UTC);
+            return pairs.stream().map(PmxConnectTradingProvider::canonicalPair).distinct().sorted()
+                    .flatMap(pair -> json.readSpotRates(get("GetSpotRates/SPC/" + pair), commonAsOf).stream()
+                            .filter(rate -> pair.equals(rate.pair())))
+                    .toList();
+        }
+        throw new IllegalArgumentException("Explicit pairs are required for SPC pricing");
+    }
+
+    /** Lecture historique MTL/FOR sans caller de production ; conserve les contrats observes.
+     * @return snapshot historique fusionne
+     */
+    @Deprecated
+    public List<MarketQuote> fetchLegacyBulkSpotRates() {
         // Production observation: MTL never includes FX and FOR never includes metals.
         // Both calls deliberately share one reference timestamp so local freshness is coherent.
         OffsetDateTime commonAsOf = OffsetDateTime.now(ZoneOffset.UTC);
@@ -83,20 +107,33 @@ public class PmxConnectTradingProvider implements TradingProvider {
         metals.forEach(q -> merged.put(q.pair(), q));
         fx.forEach(q -> merged.put(q.pair(), q));
 
-        if (pairs == null || pairs.isEmpty()) return List.copyOf(merged.values());
-        Set<String> normalized = pairs.stream().map(p -> p.toUpperCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet());
-        return merged.values().stream().filter(q -> normalized.contains(q.pair())).toList();
+        return List.copyOf(merged.values());
+    }
+
+    /** MySAAMP-compatible single-pair read endpoint, kept separate from the MTL/FOR bulk feed. */
+    public Optional<MarketQuote> fetchSpotRate(String pair) {
+        String canonicalPair = canonicalPair(pair);
+        return fetchSpotRates(Set.of(canonicalPair)).stream().findFirst();
     }
 
     @Override
     public OrderAcknowledgement submitSpotOrder(SpotOrderRequest request) {
-        if (request != null && request.tradingMode() == TradingMode.DEMO) {
+        validateSpotOrder(request);
+        if (request.tradingMode() == TradingMode.DEMO) {
             throw new com.saamp.trading.common.TradingException(org.springframework.http.HttpStatus.FORBIDDEN,
-                    "DEMO_REAL_PROVIDER_FORBIDDEN", "Un ordre DEMO ne peut pas atteindre le provider reel.");
+                    "DEMO_REAL_PROVIDER_FORBIDDEN",
+                    "Un compte de démonstration ne peut pas transmettre d'ordre à un provider réel.");
         }
+        // A second, provider-bound guard ensures a DEMO JWT cannot reach /Trade even if a future
+        // controller path omits the mode passed to OrderExecutionService.
         demoGuard.assertRealProviderSubmissionAllowed();
-        throw new UnsupportedOperationException(
-                "PMXConnect /Trade remains disabled until a UAT TokenID validates the exact success/InProcess payloads");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("ClOrdId", request.clientOrderId());
+        payload.put("Pair", canonicalPair(request.pair()));
+        payload.put("Deal", request.side() == com.saamp.trading.domain.OrderSide.BUY ? 1 : 2);
+        payload.put("Quantity", request.quantityOz());
+        payload.put("Remarks", remarks(request));
+        return json.readTradeAcknowledgement(post("Trade", payload), request);
     }
 
     @Override
@@ -185,6 +222,31 @@ public class PmxConnectTradingProvider implements TradingProvider {
         return base + "/" + version + "/" + stripLeadingSlash(endpoint);
     }
 
+    private static void validateSpotOrder(SpotOrderRequest request) {
+        if (request == null || request.clientOrderId() == null || request.clientOrderId().isBlank()
+                || request.side() == null || request.quantityOz() == null
+                || request.quantityOz().signum() <= 0) {
+            throw new IllegalArgumentException("Requête SPOT PMXConnect invalide");
+        }
+        canonicalPair(request.pair());
+    }
+
+    private static String canonicalPair(String pair) {
+        if (pair == null) throw new IllegalArgumentException("Paire SPOT PMXConnect invalide");
+        String result = pair.trim().toUpperCase(Locale.ROOT);
+        if (!result.matches("[A-Z0-9]{6,16}")) {
+            throw new IllegalArgumentException("Paire SPOT PMXConnect invalide");
+        }
+        return result;
+    }
+
+    private static String remarks(SpotOrderRequest request) {
+        if (request.remarks() != null && !request.remarks().isBlank()) {
+            return request.remarks().trim();
+        }
+        return "MyTrading " + request.clientOrderId();
+    }
+
     private void validateConfiguration() {
         if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()) {
             throw new IllegalStateException("PMXCONNECT_BASE_URL est obligatoire en mode PMXCONNECT");
@@ -211,8 +273,8 @@ public class PmxConnectTradingProvider implements TradingProvider {
             throw new IllegalStateException("PMXConnect TokenID expiré depuis " + info.expiresAt());
         }
         Duration remaining = Duration.between(now, info.expiresAt());
-        log.info("PMXConnect TokenID metadata: env={}, ClientId={}, expiresAt={}",
-                info.environment(), info.clientId(), info.expiresAt());
+        log.info("PMXConnect TokenID metadata: env={}, expiresAt={}",
+                info.environment(), info.expiresAt());
         if (remaining.compareTo(config.getTokenExpiryWarning()) <= 0) {
             log.warn("PMXConnect TokenID expires in {} days ({})",
                     remaining.toDays(), info.expiresAt());
