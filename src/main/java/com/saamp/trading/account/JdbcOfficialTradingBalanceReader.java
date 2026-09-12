@@ -24,6 +24,7 @@ public class JdbcOfficialTradingBalanceReader implements OfficialTradingBalanceR
     /** @param account compte trading @param adjustments faits CLIENT
      * @return lecture complète @throws IllegalStateException si identité, devise ou données invalides */
     @Override public Reading read(TradingAccount account, List<PendingTradingAdjustmentRepository.Adjustment> adjustments) {
+        AccountService.requireMode(account, com.saamp.trading.domain.TradingMode.LIVE);
         var jdbc=shadowSource.getIfAvailable();
         if(jdbc==null) jdbc=source.getIfAvailable();
         if(jdbc==null) throw new IllegalStateException("AS400_NOT_CONFIGURED");

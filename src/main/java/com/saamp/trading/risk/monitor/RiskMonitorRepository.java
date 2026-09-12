@@ -26,11 +26,11 @@ public final class RiskMonitorRepository {
                  Instant priceAsOf, Instant createdAt, String reason, UUID token, int attempts) { }
 
     List<Long> allCandidates(long after, int limit) {
-        return jdbc.queryForList("SELECT id FROM trading_account WHERE id>? ORDER BY id LIMIT ?",Long.class,after,limit);
+        return jdbc.queryForList("SELECT id FROM trading_account WHERE account_mode='LIVE' AND id>? ORDER BY id LIMIT ?",Long.class,after,limit);
     }
     List<Long> candidates(long after, int limit) {
         return jdbc.queryForList("""
-            SELECT a.id FROM trading_account a WHERE a.id>? AND
+            SELECT a.id FROM trading_account a WHERE a.account_mode='LIVE' AND a.id>? AND
               (EXISTS(SELECT 1 FROM trading_balance b WHERE b.account_id=a.id AND b.asset IN ('XAU','XAG','XPT','XPD') AND b.quantity<>0)
                OR EXISTS(SELECT 1 FROM trading_risk_monitor_state s WHERE s.account_id=a.id AND
                     (s.level IS DISTINCT FROM 'NO_POSITION' OR s.error_code IS NOT NULL)))

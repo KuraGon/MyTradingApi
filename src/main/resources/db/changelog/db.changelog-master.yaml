@@ -27,3 +27,5 @@ databaseChangeLog:
       file: db/changelog/013-risk-monitor.sql
   - include:
       file: db/changelog/014-signed-internal-balance-projection.sql
+  - include:
+      file: db/changelog/015-demo-order-isolation.sql

@@ -8,6 +8,7 @@ import com.saamp.trading.config.SecurityConfig;
 import com.saamp.trading.domain.*;
 import com.saamp.trading.order.OrderExecutionService;
 import com.saamp.trading.order.OrderPreviewResponse;
+import com.saamp.trading.order.OrderPreviewRequest;
 import com.saamp.trading.order.OrderQueryService;
 import com.saamp.trading.order.TradingOrder;
 import com.saamp.trading.pricing.ClientQuote;
@@ -125,7 +126,7 @@ class ClientConsultationControllerTest {
         account = new TradingAccount(ACCOUNT_ID, COMPANY_ID, Asset.EUR, AccountStatus.ACTIVE,
                 new BigDecimal("50000"), new BigDecimal("100000"), null, 1, NOW, NOW);
         when(traders.current(any())).thenReturn(new CurrentTrader(7L, COMPANY_ID, "COMP", "client", Set.of()));
-        when(accounts.requireByCompany(COMPANY_ID)).thenReturn(account);
+        when(accounts.requireByCompany(eq(COMPANY_ID),any(com.saamp.trading.domain.TradingMode.class))).thenReturn(account);
     }
 
     @Test
@@ -136,31 +137,31 @@ class ClientConsultationControllerTest {
                 .andExpect(jsonPath("$.baseCurrency").value("EUR"))
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
 
-        verify(accounts).requireByCompany(COMPANY_ID);
+        verify(accounts).requireByCompany(eq(COMPANY_ID),any(com.saamp.trading.domain.TradingMode.class));
     }
 
     @Test
     void crossCompanyAccountIsHiddenAsNotFound() throws Exception {
         when(traders.current(any())).thenReturn(new CurrentTrader(8L, 99L, "OTHER", "other", Set.of()));
-        when(accounts.requireByCompany(99L)).thenThrow(new TradingException(HttpStatus.NOT_FOUND,
+        when(accounts.requireByCompany(eq(99L),any(com.saamp.trading.domain.TradingMode.class))).thenThrow(new TradingException(HttpStatus.NOT_FOUND,
                 "TRADING_ACCOUNT_NOT_FOUND", "Compte Trading absent"));
 
         mvc.perform(get("/api/v1/accounts/me").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("TRADING_ACCOUNT_NOT_FOUND"));
 
-        verify(accounts).requireByCompany(99L);
+        verify(accounts).requireByCompany(eq(99L),any(com.saamp.trading.domain.TradingMode.class));
         verifyNoInteractions(balances, positions, risk, orders, statements);
     }
 
     @Test
     void balancesReadOnlyCurrentTradingAccount() throws Exception {
-        when(balances.findAll(ACCOUNT_ID)).thenReturn(List.of(
+        when(balances.findAll(ACCOUNT_ID, TradingMode.LIVE)).thenReturn(List.of(
                 new Balance(ACCOUNT_ID, Asset.EUR, new BigDecimal("123.450000"), NOW),
                 new Balance(ACCOUNT_ID, Asset.USD, new BigDecimal("999.000000"), NOW),
                 new Balance(ACCOUNT_ID, Asset.XAU, new BigDecimal("2.000000"), NOW)));
-        when(reservations.available(eq(ACCOUNT_ID), eq(Asset.EUR), any())).thenReturn(new BigDecimal("100.000000"));
-        when(reservations.available(eq(ACCOUNT_ID), eq(Asset.XAU), any())).thenReturn(new BigDecimal("2.000000"));
+        when(reservations.available(eq(ACCOUNT_ID), eq(Asset.EUR), any(BigDecimal.class), eq(TradingMode.LIVE))).thenReturn(new BigDecimal("100.000000"));
+        when(reservations.available(eq(ACCOUNT_ID), eq(Asset.XAU), any(BigDecimal.class), eq(TradingMode.LIVE))).thenReturn(new BigDecimal("2.000000"));
 
         mvc.perform(get("/api/v1/accounts/me/balances").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isOk())
@@ -168,12 +169,37 @@ class ClientConsultationControllerTest {
                 .andExpect(jsonPath("$[1].asset").value("XAU"))
                 .andExpect(jsonPath("$.length()").value(2));
 
-        verify(balances).findAll(ACCOUNT_ID);
+        verify(balances).findAll(ACCOUNT_ID, TradingMode.LIVE);
+    }
+
+    @Test
+    void demoBalancesPositionsAndSummaryStayOnTheDedicatedLocalMode() throws Exception {
+        when(traders.current(any())).thenReturn(new CurrentTrader(7L, COMPANY_ID, "COMP", "internal", Set.of(), TradingMode.DEMO));
+        when(balances.findAll(ACCOUNT_ID, TradingMode.DEMO)).thenReturn(List.of(
+                new Balance(ACCOUNT_ID, Asset.EUR, new BigDecimal("100.000000"), NOW),
+                new Balance(ACCOUNT_ID, Asset.XAU, BigDecimal.ONE, NOW)));
+        when(reservations.available(eq(ACCOUNT_ID), eq(Asset.EUR), any(BigDecimal.class), eq(TradingMode.DEMO)))
+                .thenReturn(new BigDecimal("100.000000"));
+        when(reservations.available(eq(ACCOUNT_ID), eq(Asset.XAU), any(BigDecimal.class), eq(TradingMode.DEMO)))
+                .thenReturn(BigDecimal.ONE);
+        when(positions.read(account, TradingMode.DEMO)).thenReturn(List.of());
+        when(risk.computeAndStore(account, TradingMode.DEMO)).thenReturn(new RiskResult(
+                new BigDecimal("100.00"), BigDecimal.ZERO, new BigDecimal("100.00"), BigDecimal.ZERO,
+                new BigDecimal("100.00"), BigDecimal.ZERO, BigDecimal.ZERO, RiskStatus.NO_POSITION));
+
+        mvc.perform(get("/api/v1/accounts/me/balances").with(jwtWith(ACCOUNT_READ))).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/accounts/me/positions").with(jwtWith(ACCOUNT_READ))).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/accounts/me/summary").with(jwtWith(ACCOUNT_READ))).andExpect(status().isOk());
+
+        verify(balances).findAll(ACCOUNT_ID, TradingMode.DEMO);
+        verify(positions).read(account, TradingMode.DEMO);
+        verify(risk).computeAndStore(account, TradingMode.DEMO);
+        verify(balances, never()).findAll(ACCOUNT_ID);
     }
 
     @Test
     void positionsExposeNoInternalPricingField() throws Exception {
-        when(positions.read(account)).thenReturn(List.of(new AccountPosition(Asset.XAU,
+        when(positions.read(account, TradingMode.LIVE)).thenReturn(List.of(new AccountPosition(Asset.XAU,
                 new BigDecimal("2.000000"), new BigDecimal("2000.00"), new BigDecimal("4000.00"),
                 Instant.parse("2026-09-03T10:00:00Z"), new BigDecimal("5.00"), new BigDecimal("200.00"))));
 
@@ -192,7 +218,7 @@ class ClientConsultationControllerTest {
 
     @Test
     void positionsPropagateMarketPriceStaleAsProblemDetail() throws Exception {
-        when(positions.read(account)).thenThrow(new TradingException(HttpStatus.CONFLICT,
+        when(positions.read(account, TradingMode.LIVE)).thenThrow(new TradingException(HttpStatus.CONFLICT,
                 "MARKET_PRICE_STALE", "Prix périmé"));
 
         mvc.perform(get("/api/v1/accounts/me/positions").with(jwtWith(ACCOUNT_READ)))
@@ -206,7 +232,7 @@ class ClientConsultationControllerTest {
         var result = new RiskResult(new BigDecimal("1000.00"), new BigDecimal("200.00"),
                 new BigDecimal("1200.00"), new BigDecimal("20.00"), new BigDecimal("1180.00"),
                 new BigDecimal("200.00"), new BigDecimal("700.00"), RiskStatus.NORMAL);
-        when(risk.computeAndStore(account)).thenReturn(result);
+        when(risk.computeAndStore(account, TradingMode.LIVE)).thenReturn(result);
 
         var response = mvc.perform(get("/api/v1/accounts/me/summary").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isOk())
@@ -221,7 +247,7 @@ class ClientConsultationControllerTest {
                 .containsExactlyInAnyOrder("totalFunds", "positionValuation", "netEquity", "marginRequirement",
                         "freeEquity", "grossPosition", "coveragePct", "riskStatus");
 
-        verify(risk).computeAndStore(account);
+        verify(risk).computeAndStore(account, TradingMode.LIVE);
     }
 
     @Test
@@ -237,7 +263,7 @@ class ClientConsultationControllerTest {
         when(order.status()).thenReturn(OrderStatus.PENDING_UNKNOWN);
         when(order.createdAt()).thenReturn(NOW);
         OrderView view = OrderView.from(order);
-        when(orders.page(account, null, null)).thenReturn(new OrderPageView(List.of(view), null, false));
+        when(orders.page(account, null, null, TradingMode.LIVE)).thenReturn(new OrderPageView(List.of(view), null, false));
 
         mvc.perform(get("/api/v1/accounts/me/orders").with(jwtWith(HISTORY_READ)))
                 .andExpect(status().isOk())
@@ -251,7 +277,7 @@ class ClientConsultationControllerTest {
                 .andExpect(content().string(not(containsString("spreadApplied"))))
                 .andExpect(content().string(not(containsString("saampRevenue"))));
 
-        verify(orders).page(account, null, null);
+        verify(orders).page(account, null, null, TradingMode.LIVE);
     }
 
     @Test
@@ -264,7 +290,7 @@ class ClientConsultationControllerTest {
         when(order.status()).thenReturn(OrderStatus.PENDING_UNKNOWN);
         when(order.createdAt()).thenReturn(NOW);
         OrderView view = OrderView.from(order);
-        when(orders.detail(account, 70L)).thenReturn(view);
+        when(orders.detail(account, 70L, TradingMode.LIVE)).thenReturn(view);
 
         mvc.perform(get("/api/v1/accounts/me/orders/70").with(jwtWith(HISTORY_READ)))
                 .andExpect(status().isOk())
@@ -277,9 +303,9 @@ class ClientConsultationControllerTest {
 
     @Test
     void unknownOrCrossCompanyOrderDetailIsNotFound() throws Exception {
-        when(orders.detail(account, 404L)).thenThrow(new TradingException(HttpStatus.NOT_FOUND,
+        when(orders.detail(account, 404L, TradingMode.LIVE)).thenThrow(new TradingException(HttpStatus.NOT_FOUND,
                 "ORDER_NOT_FOUND", "Ordre introuvable"));
-        when(orders.detail(account, 405L)).thenThrow(new TradingException(HttpStatus.NOT_FOUND,
+        when(orders.detail(account, 405L, TradingMode.LIVE)).thenThrow(new TradingException(HttpStatus.NOT_FOUND,
                 "ORDER_NOT_FOUND", "Ordre introuvable"));
 
         mvc.perform(get("/api/v1/accounts/me/orders/404").with(jwtWith(HISTORY_READ)))
@@ -290,7 +316,7 @@ class ClientConsultationControllerTest {
 
     @Test
     void previewExposesOnlyClientSafeFields() throws Exception {
-        when(execution.preview(eq(COMPANY_ID), eq(7L), any())).thenReturn(new OrderPreviewResponse(
+        when(execution.preview(eq(COMPANY_ID), eq(7L), any(OrderPreviewRequest.class), eq(TradingMode.LIVE))).thenReturn(new OrderPreviewResponse(
                 71L, Asset.XAU, OrderSide.BUY, BigDecimal.ONE, "XAUEUR", new BigDecimal("2000.00"),
                 NOW, NOW.plusMinutes(2), new BigDecimal("2010.00"), BigDecimal.ZERO));
 
@@ -350,7 +376,7 @@ class ClientConsultationControllerTest {
         when(order.indicativeClientPrice()).thenReturn(new BigDecimal("2010.00"));
         when(order.createdAt()).thenReturn(NOW);
         when(order.submittedAt()).thenReturn(NOW.plusSeconds(1));
-        when(execution.submit(71L, COMPANY_ID, 7L)).thenReturn(order);
+        when(execution.submit(71L, COMPANY_ID, 7L, TradingMode.LIVE)).thenReturn(order);
 
         mvc.perform(post("/api/v1/accounts/me/orders/71/submit").with(jwtWith(ORDER_WRITE)))
                 .andExpect(status().isOk())
@@ -404,7 +430,7 @@ class ClientConsultationControllerTest {
                 List.of(new StatementLine(1L, Asset.EUR, new BigDecimal("100.00"),
                         LedgerEntryType.ADJUSTMENT, null, new BigDecimal("100.00"),
                         Instant.parse("2026-09-03T09:00:00Z"))), 1L, true);
-        when(statements.build(account, 9L, 25)).thenReturn(statement);
+        when(statements.build(account, 9L, 25, TradingMode.LIVE)).thenReturn(statement);
 
         mvc.perform(get("/api/v1/accounts/me/statement").param("cursor", "9").param("limit", "25")
                         .with(jwtWith(HISTORY_READ)))
@@ -415,7 +441,7 @@ class ClientConsultationControllerTest {
                 .andExpect(content().string(not(containsString("createdBy"))))
                 .andExpect(content().string(not(containsString("transferRef"))));
 
-        verify(statements).build(account, 9L, 25);
+        verify(statements).build(account, 9L, 25, TradingMode.LIVE);
     }
 
     @Test
@@ -470,7 +496,7 @@ class ClientConsultationControllerTest {
         var snapshots=mock(com.saamp.trading.risk.RiskSnapshotRepository.class);
         var positionService=new PositionService(balances,pricing,marginRates);
         var riskService=new RiskService(balances,positionService,snapshots);
-        when(balances.findAll(ACCOUNT_ID)).thenReturn(List.of(
+        when(balances.findAll(ACCOUNT_ID, TradingMode.LIVE)).thenReturn(List.of(
                 new Balance(ACCOUNT_ID,Asset.EUR,new BigDecimal("96959.90"),NOW),
                 new Balance(ACCOUNT_ID,Asset.XAU,new BigDecimal("1.01"),NOW)));
         when(pricing.quoteForDisplay(COMPANY_ID,Asset.XAU,Asset.EUR)).thenReturn(new ClientQuote(
@@ -479,8 +505,8 @@ class ClientConsultationControllerTest {
                 new BigDecimal("3019.03"),new BigDecimal("2991"),
                 new BigDecimal("0.003"),new BigDecimal("0.003"),1,NOW));
         when(marginRates.currentRate(ACCOUNT_ID,Asset.XAU)).thenReturn(new BigDecimal("0.05"));
-        when(positions.read(account)).thenAnswer(call->positionService.read(account));
-        when(risk.computeAndStore(account)).thenAnswer(call->riskService.computeAndStore(account));
+        when(positions.read(account, TradingMode.LIVE)).thenAnswer(call->positionService.read(account, TradingMode.LIVE));
+        when(risk.computeAndStore(account, TradingMode.LIVE)).thenAnswer(call->riskService.computeAndStore(account, TradingMode.LIVE));
 
         var positionResponse=mvc.perform(get("/api/v1/accounts/me/positions").with(jwtWith(ACCOUNT_READ)))
                 .andExpect(status().isOk())
@@ -508,8 +534,8 @@ class ClientConsultationControllerTest {
     void summaryKeepsUnconfiguredLimitsNull() throws Exception {
         account=new TradingAccount(ACCOUNT_ID,COMPANY_ID,Asset.EUR,AccountStatus.ACTIVE,
                 null,null,null,1,NOW,NOW);
-        when(accounts.requireByCompany(COMPANY_ID)).thenReturn(account);
-        when(risk.computeAndStore(account)).thenReturn(new RiskResult(new BigDecimal("100.00"),
+        when(accounts.requireByCompany(eq(COMPANY_ID),any(com.saamp.trading.domain.TradingMode.class))).thenReturn(account);
+        when(risk.computeAndStore(account, TradingMode.LIVE)).thenReturn(new RiskResult(new BigDecimal("100.00"),
                 BigDecimal.ZERO,new BigDecimal("100.00"),BigDecimal.ZERO,new BigDecimal("100.00"),
                 BigDecimal.ZERO,new BigDecimal("999.99"),RiskStatus.NO_POSITION));
         var response=mvc.perform(get("/api/v1/accounts/me/summary").with(jwtWith(ACCOUNT_READ)))

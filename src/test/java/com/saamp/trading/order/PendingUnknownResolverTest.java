@@ -40,6 +40,17 @@ class PendingUnknownResolverTest {
     }
 
     @Test
+    void demoCandidateNeverQueriesRealProviderEvenWithoutJwt() {
+        TradingOrder demo = mock(TradingOrder.class);
+        when(demo.tradingMode()).thenReturn(TradingMode.DEMO);
+        when(orders.findPendingUnknownDue(50)).thenReturn(List.of(demo));
+        resolver.resolveDue();
+        verifyNoInteractions(provider, accounts, pricing, events);
+        verify(orders, never()).markPendingUnknown(anyLong(), anyString(), anyString());
+        verify(orders, never()).scheduleNextResolution(anyLong(), anyInt(), any(), anyBoolean());
+    }
+
+    @Test
     void inProcessThenProcessedSettlesExactlyOnceWithoutRetransmission() {
         TradingOrder order = order("processed");
         TradingAccount account = account();
@@ -109,7 +120,7 @@ class PendingUnknownResolverTest {
                 null, null, null, new BigDecimal("0.001"), 1, null, null,
                 key, ClientOrderIdFactory.fromIdempotencyKey(key), null, "IN_PROCESS", null, 0,
                 OffsetDateTime.now().minusSeconds(2), OffsetDateTime.now().minusSeconds(1), null,
-                OffsetDateTime.now().minusMinutes(1), OffsetDateTime.now().minusMinutes(1), null);
+                OffsetDateTime.now().minusMinutes(1), OffsetDateTime.now().minusMinutes(1), null, TradingMode.LIVE);
     }
 
     private TradingAccount account() {

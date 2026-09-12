@@ -4,6 +4,7 @@ import com.saamp.trading.account.BalanceRepository;
 import com.saamp.trading.common.TradingException;
 import com.saamp.trading.config.TradingProperties;
 import com.saamp.trading.domain.Asset;
+import com.saamp.trading.domain.TradingMode;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -46,11 +47,21 @@ public class ReservationService {
         return balance.subtract(reservations.activeReserved(accountId, asset));
     }
 
+    /** Returns availability from the same durable LIVE/DEMO reservation namespace as the balance. */
+    public BigDecimal available(long accountId, Asset asset, TradingMode tradingMode) {
+        BigDecimal balance = operational.findAll(accountId, tradingMode).stream().filter(b -> b.asset()==asset)
+                .map(b -> b.quantity()).findFirst().orElse(BigDecimal.ZERO);
+        return balance.subtract(reservations.activeReserved(accountId, asset, tradingMode));
+    }
+
     /** Disponible issu du snapshot opérationnel, net des engagements persistants.
      * @param accountId compte @param asset actif @param operationalBalance solde
      * @return disponible sans seconde lecture de compte */
     public BigDecimal available(long accountId, Asset asset, BigDecimal operationalBalance) {
         return operationalBalance.subtract(reservations.activeReserved(accountId, asset));
+    }
+    public BigDecimal available(long accountId, Asset asset, BigDecimal operationalBalance, TradingMode tradingMode) {
+        return operationalBalance.subtract(reservations.activeReserved(accountId, asset, tradingMode));
     }
     @Transactional public void consumeForOrder(long orderId) { reservations.consumeForOrder(orderId); }
     @Transactional public void releaseForOrder(long orderId) { reservations.releaseForOrder(orderId); }

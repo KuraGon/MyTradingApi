@@ -103,10 +103,109 @@ class TradingDatabaseInvariantTest {
     }
 
     @Test
+    void crossModeLedgerAndReservationWritesAreRejectedByDatabase() {
+        long companyId=COMPANY_IDS.incrementAndGet();
+        long accountId=createAccount(companyId);
+        long live=createDraftOrder(accountId,companyId,"cross-live-"+companyId,"LIVE");
+        long demoCompany=COMPANY_IDS.incrementAndGet();
+        long demoAccount=createDemoAccount(demoCompany);
+        long demo=createDraftOrder(demoAccount,demoCompany,"cross-demo-"+demoCompany,"DEMO");
+        for (String table : List.of("trading_ledger_entry","trading_demo_ledger_entry")) {
+            long wrong = table.equals("trading_ledger_entry") ? demo : live;
+            long right = table.equals("trading_ledger_entry") ? live : demo;
+            String sql="INSERT INTO "+table+"(account_id,asset,delta,entry_type,order_id,balance_after,created_by) VALUES (?,'EUR',1,'TRADE',?,1,'test')";
+            assertThatThrownBy(()->jdbc.update(sql,accountId,wrong)).isInstanceOf(DataAccessException.class);
+            long matchingAccount=table.equals("trading_ledger_entry")?accountId:demoAccount;
+            assertThat(jdbc.update(sql,matchingAccount,right)).isOne();
+        }
+        String reservation="INSERT INTO trading_reservation(account_id,order_id,asset,quantity,status,expires_at,trading_mode,reservation_kind) VALUES (?,?,'EUR',1,'ACTIVE',NOW()+INTERVAL '1 hour',?,'CASH')";
+        assertThatThrownBy(()->jdbc.update(reservation,accountId,demo,"LIVE")).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update(reservation,accountId,live,"DEMO")).isInstanceOf(DataAccessException.class);
+        jdbc.update(reservation,demoAccount,demo,"DEMO");
+        assertThatThrownBy(()->jdbc.update("UPDATE trading_reservation SET trading_mode='LIVE' WHERE order_id=?",demo))
+            .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("INSERT INTO trading_ledger_entry(account_id,asset,delta,entry_type,balance_after,created_by) VALUES (?,'EUR',1,'DEMO_ADJUSTMENT',1,'test')",accountId))
+            .isInstanceOf(DataAccessException.class);
+    }
+
+    @Test
+    void demoAdjustmentIsAppendOnlyAndDoesNotChangeLiveProjection() {
+        long accountId=createDemoAccount(COMPANY_IDS.incrementAndGet());
+        jdbc.update("INSERT INTO trading_demo_ledger_entry(account_id,asset,delta,entry_type,adjustment_reference,balance_after,created_by) VALUES (?,'EUR',0,'DEMO_ADJUSTMENT','fixture',0,'test')",accountId);
+        assertThatThrownBy(()->jdbc.update("DELETE FROM trading_demo_ledger_entry WHERE account_id=?",accountId)).isInstanceOf(DataAccessException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM trading_balance WHERE account_id=?",Integer.class,accountId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM trading_ledger_entry WHERE account_id=?",Integer.class,accountId)).isZero();
+    }
+
+    @Test
+    void backgroundSelectionExcludesBothPendingDemoStates() {
+        long companyId=COMPANY_IDS.incrementAndGet();
+        long accountId=createAccount(companyId);
+        long live=createDraftOrder(accountId,companyId,"pending-live-"+companyId,"LIVE");
+        long demoCompany=COMPANY_IDS.incrementAndGet();
+        long demoAccount=createDemoAccount(demoCompany);
+        long demo=createDraftOrder(demoAccount,demoCompany,"pending-demo-"+demoCompany,"DEMO");
+        var repository=new com.saamp.trading.order.OrderRepository(jdbc);
+        for (String state:List.of("PENDING","PENDING_UNKNOWN")) {
+            jdbc.update("UPDATE trading_order SET status=?,submitted_at=NOW()-INTERVAL '1 day',next_resolution_at=NOW()-INTERVAL '1 day' WHERE id IN (?,?)",state,live,demo);
+            var ids=repository.findPendingUnknownDue(10000).stream().map(com.saamp.trading.order.TradingOrder::id).toList();
+            assertThat(ids).contains(live).doesNotContain(demo);
+        }
+    }
+
+    @Test
     void signedCurrencyProjectionIsAllowedAfter014() {
         long accountId = createAccount(COMPANY_IDS.incrementAndGet());
         jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,'EUR',-0.000001)",accountId);
         assertThat(jdbc.queryForObject("SELECT quantity FROM trading_balance WHERE account_id=? AND asset='EUR'",BigDecimal.class,accountId)).isEqualByComparingTo("-0.000001");
+    }
+
+    @Test
+    void demoOrderCannotEnterTheAs400OutboxOrBeClaimedByAFutureWorker() {
+        long companyId = COMPANY_IDS.incrementAndGet();
+        long accountId = createDemoAccount(companyId);
+        long demoOrder = createDraftOrder(accountId, companyId, "demo-outbox-" + companyId, "DEMO");
+
+        as400Outbox.enqueueFilled(demoOrder);
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_sync_outbox WHERE order_id=?", Integer.class, demoOrder))
+                .isZero();
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO trading_as400_sync_outbox(order_id,target,workflow_version,expected_leg_count)
+                VALUES (?,'SICOUVI',2,4)
+                """, demoOrder)).isInstanceOf(DataAccessException.class);
+        assertThat(as400Outbox.claimDue(10, Duration.ofMinutes(1))).isEmpty();
+    }
+
+    @Test
+    void tradingModeIsImmutableAfterTheOrderIsCreated() {
+        long companyId = COMPANY_IDS.incrementAndGet();
+        long accountId = createDemoAccount(companyId);
+        long demoOrder = createDraftOrder(accountId, companyId, "demo-mode-immutable-" + companyId, "DEMO");
+
+        assertThatThrownBy(() -> jdbc.update("UPDATE trading_order SET trading_mode='LIVE' WHERE id=?", demoOrder))
+                .isInstanceOf(DataAccessException.class);
+        assertThat(jdbc.queryForObject("SELECT trading_mode FROM trading_order WHERE id=?", String.class, demoOrder))
+                .isEqualTo("DEMO");
+    }
+
+    @Test
+    void accountModePreventsOrdersAndEveryProjectionFromCrossingModes() {
+        long liveCompany=COMPANY_IDS.incrementAndGet(), demoCompany=COMPANY_IDS.incrementAndGet();
+        long live=createAccount(liveCompany), demo=createDemoAccount(demoCompany);
+        assertThatThrownBy(()->createDraftOrder(live,liveCompany,"cross-account-demo-"+live,"DEMO")).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(()->createDraftOrder(demo,demoCompany,"cross-account-live-"+demo,"LIVE")).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("UPDATE trading_account SET account_mode='LIVE' WHERE id=?",demo)).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("INSERT INTO trading_balance(account_id,asset,quantity) VALUES (?,'EUR',1)",demo)).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("INSERT INTO trading_demo_balance(account_id,asset,quantity) VALUES (?,'EUR',1)",live)).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("INSERT INTO trading_ledger_entry(account_id,asset,delta,entry_type,balance_after,created_by) VALUES (?,'EUR',1,'ADJUSTMENT',1,'test')",demo)).isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("INSERT INTO trading_transfer(account_id,asset,quantity,direction,external_ref,status) VALUES (?,'EUR',1,'IN',?,'RECEIVED')",demo,"deny-demo-"+demo)).isInstanceOf(DataAccessException.class);
+        var account=new com.saamp.trading.account.AccountRepository(jdbc).findById(demo).orElseThrow();
+        assertThat(account.accountMode()).isEqualTo(com.saamp.trading.domain.TradingMode.DEMO);
+        assertThat(account.as400Ste()).isNull();
+        assertThat(account.as400NucliTrading()).isNull();
+        assertThat(jdbc.update("INSERT INTO trading_demo_balance(account_id,asset,quantity) VALUES (?,'EUR',1)",demo)).isOne();
+        assertThatThrownBy(()->jdbc.update("UPDATE trading_account SET as400_nucli_trading=1,as400_nucli_commercial=1 WHERE id=?",live)).isInstanceOf(DataAccessException.class);
     }
 
     @Test
@@ -424,15 +523,23 @@ class TradingDatabaseInvariantTest {
         return id;
     }
 
+    private long createDemoAccount(long companyId) {
+        return jdbc.queryForObject("INSERT INTO trading_account(company_id,base_currency,status,account_mode) VALUES (?,'EUR','ACTIVE','DEMO') RETURNING id",Long.class,companyId);
+    }
+
     private long createDraftOrder(long accountId, long companyId, String key) {
+        return createDraftOrder(accountId, companyId, key, "LIVE");
+    }
+
+    private long createDraftOrder(long accountId, long companyId, String key, String tradingMode) {
         Long id = jdbc.queryForObject("""
                 INSERT INTO trading_order(
                     account_id,company_id,asset,pair,side,order_type,requested_quantity,requested_unit,
                     quantity_oz,status,indicative_price,indicative_client_price_raw,indicative_client_price,
-                    spread_applied,spread_config_version,idempotency_key,cl_ord_id)
-                VALUES (?,?,'XAU','XAUEUR','BUY','SPOT',1,'OZ',1,'DRAFT',100,100,100,0.001,1,?,?)
+                    spread_applied,spread_config_version,idempotency_key,cl_ord_id,trading_mode)
+                VALUES (?,?,'XAU','XAUEUR','BUY','SPOT',1,'OZ',1,'DRAFT',100,100,100,0.001,1,?,?,?)
                 RETURNING id
-                """, Long.class, accountId, companyId, key, "TEST-" + key);
+                """, Long.class, accountId, companyId, key, "TEST-" + key, tradingMode);
         ((FixtureJdbcTemplate) jdbc).orderIds.add(id);
         return id;
     }
@@ -446,12 +553,12 @@ class TradingDatabaseInvariantTest {
         @Override
         public <T> List<T> query(String sql, org.springframework.jdbc.core.RowMapper<T> mapper, Object... args) {
             if (sql.stripLeading().startsWith("WITH due AS (")) {
-                if (orderIds.isEmpty() || !sql.contains("WHERE target='SICOUVI'")
-                        || !sql.contains("ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED"))
+                if (orderIds.isEmpty() || !sql.contains("WHERE e.target='SICOUVI'")
+                        || !sql.contains("ORDER BY e.id LIMIT ? FOR UPDATE OF e SKIP LOCKED"))
                     throw new IllegalStateException("Claim sans périmètre de fixtures ou SQL inattendu");
                 String ids = orderIds.stream().sorted().map(String::valueOf)
                         .collect(java.util.stream.Collectors.joining(","));
-                sql = sql.replace("WHERE target='SICOUVI'", "WHERE order_id IN (" + ids + ") AND target='SICOUVI'");
+                sql = sql.replace("WHERE e.target='SICOUVI'", "WHERE e.order_id IN (" + ids + ") AND e.target='SICOUVI'");
             }
             return super.query(sql, mapper, args);
         }

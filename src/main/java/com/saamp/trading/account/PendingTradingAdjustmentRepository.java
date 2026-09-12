@@ -33,7 +33,7 @@ public class PendingTradingAdjustmentRepository {
             FROM trading_order o
             LEFT JOIN trading_as400_sync_outbox e ON e.order_id=o.id AND e.target='SICOUVI'
             LEFT JOIN trading_as400_movement m ON m.event_id=e.id AND m.leg_role='CLIENT'
-            WHERE o.account_id=? AND o.status='FILLED' AND o.executed_at>=? ORDER BY o.id,m.id
+            WHERE o.account_id=? AND o.trading_mode='LIVE' AND o.status='FILLED' AND o.executed_at>=? ORDER BY o.id,m.id
             """, (r,n) -> new Adjustment(r.getLong("id"),Asset.valueOf(r.getString("asset")),
                 Asset.valueOf(r.getString("pair").substring(3)),OrderSide.valueOf(r.getString("side")),
                 r.getBigDecimal("quantity_oz"),r.getBigDecimal("gross_amount"),

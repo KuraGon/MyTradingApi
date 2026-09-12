@@ -55,10 +55,10 @@ class ReservationSemanticsMigrationTest {
         }
     }
 
-    @Test void completeInstallationUsesTheRealMasterThrough014() throws Exception {
+    @Test void completeInstallationUsesTheRealMasterThrough015() throws Exception {
         try (var fixture=new Schema()) {
             migrate(fixture.source,fixture.name,"db.changelog-master.yaml");
-            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(14);
+            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(15);
             assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=? AND table_name='trading_reservation' AND column_name='reservation_kind' AND is_nullable='NO'",Integer.class,fixture.name)).isEqualTo(1);
         }
     }
@@ -110,6 +110,27 @@ class ReservationSemanticsMigrationTest {
             assertThat(fixture.jdbc.queryForList("SELECT id,md5sum FROM databasechangelog WHERE orderexecuted<=13 ORDER BY orderexecuted")).isEqualTo(history);
             fixture.jdbc.update("UPDATE trading_balance SET quantity=-1 WHERE asset='EUR'");
             assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM pg_trigger WHERE tgrelid='trading_ledger_entry'::regclass AND tgname='trg_trading_ledger_append_only'",Integer.class)).isEqualTo(1);
+        }
+    }
+
+    @Test void unusedDemoMigrationRollsBackWithoutChangingLiveAccountOrHistory() throws Exception {
+        try (var fixture=new Schema()) {
+            migrateCount(fixture.connection,fixture.name,14);
+            fixture.jdbc.update("INSERT INTO trading_account(id,company_id,base_currency,status) VALUES (1,1,'EUR','ACTIVE')");
+            var history=fixture.jdbc.queryForList("SELECT * FROM databasechangelog ORDER BY orderexecuted");
+            var before=fixture.jdbc.queryForList("SELECT * FROM trading_account");
+            migrateCount(fixture.connection,fixture.name,1);
+            assertThat(fixture.jdbc.queryForObject("SELECT account_mode FROM trading_account WHERE id=1",String.class)).isEqualTo("LIVE");
+            var database=liquibase.database.DatabaseFactory.getInstance().findCorrectDatabaseImplementation(
+                    new liquibase.database.jvm.JdbcConnection(fixture.connection));
+            database.setDefaultSchemaName(fixture.name);
+            database.setLiquibaseSchemaName(fixture.name);
+            var runner=new liquibase.Liquibase("db/changelog/db.changelog-master.yaml",
+                    new liquibase.resource.ClassLoaderResourceAccessor(),database);
+            runner.rollback(1,new liquibase.Contexts(),new liquibase.LabelExpression());
+            fixture.connection.setAutoCommit(true);
+            assertThat(fixture.jdbc.queryForList("SELECT * FROM trading_account")).isEqualTo(before);
+            assertThat(fixture.jdbc.queryForList("SELECT * FROM databasechangelog ORDER BY orderexecuted")).isEqualTo(history);
         }
     }
 

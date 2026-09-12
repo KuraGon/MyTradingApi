@@ -7,6 +7,7 @@ import com.saamp.trading.domain.*;
 import com.saamp.trading.pricing.*;
 import com.saamp.trading.provider.*;
 import com.saamp.trading.reservation.*;
+import com.saamp.trading.security.TradingDemoGuard;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.*;
@@ -24,12 +25,13 @@ public class OrderExecutionService {
     private final PricingService pricing;
     private final ReservationRepository reservationRepository;
     private final OrderRepository orders;
-    private final TradingProvider provider;
+    private final TradingExecutionProviderRouter providers;
     private final ExecutionEventHandler executionEvents;
     private final ExecutionGateRepository gate;
     private final OrderCapacityService capacity;
     private final TradingProperties properties;
     private final TransactionTemplate transactions;
+    private final TradingDemoGuard demoGuard;
 
     /**
      * Réunit le contrôle local et le fournisseur en conservant deux phases séparées.
@@ -54,10 +56,21 @@ public class OrderExecutionService {
                                  PricingService pricing, ReservationRepository reservationRepository, OrderRepository orders,
                                  TradingProvider provider, ExecutionEventHandler executionEvents, ExecutionGateRepository gate,
                                  OrderCapacityService capacity, TradingProperties properties, PlatformTransactionManager transactionManager) {
+        this(accounts, balances, pricingRepository, pricing, reservationRepository, orders, provider, executionEvents, gate,
+                capacity, properties, transactionManager, new TradingDemoGuard(properties));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public OrderExecutionService(AccountRepository accounts, EffectiveBalanceService balances, PricingRepository pricingRepository,
+                                 PricingService pricing, ReservationRepository reservationRepository, OrderRepository orders,
+                                 TradingProvider provider, ExecutionEventHandler executionEvents, ExecutionGateRepository gate,
+                                 OrderCapacityService capacity, TradingProperties properties, PlatformTransactionManager transactionManager,
+                                 TradingDemoGuard demoGuard) {
         this.accounts=accounts; this.balances=balances; this.pricingRepository=pricingRepository; this.pricing=pricing;
-        this.reservationRepository=reservationRepository; this.orders=orders; this.provider=provider;
+        this.reservationRepository=reservationRepository; this.orders=orders; this.providers=new TradingExecutionProviderRouter(provider,new SimulatedTradingProvider(pricingRepository));
         this.executionEvents=executionEvents; this.gate=gate; this.capacity=capacity; this.properties=properties;
         this.transactions=new TransactionTemplate(transactionManager);
+        this.demoGuard=demoGuard;
     }
 
     /**
@@ -72,19 +85,29 @@ public class OrderExecutionService {
      */
     @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public OrderPreviewResponse preview(long companyId,long userId,OrderPreviewRequest request) {
+        return preview(companyId, userId, request, TradingMode.LIVE);
+    }
+
+    /** Fixes the caller mode when the draft and all of its reservations are created. */
+    @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    public OrderPreviewResponse preview(long companyId,long userId,OrderPreviewRequest request,TradingMode tradingMode) {
+        final TradingMode mode=tradingMode==null?TradingMode.LIVE:tradingMode;
+        ensureDemoSubmissionAllowed(mode);
         TradingAccount account=accountForCompany(companyId);
+        AccountService.requireMode(account,mode);
         ensureTradingAllowed(account);
-        var balanceSnapshot=balances.captureForOperation(account);
+        var balanceSnapshot=balances.captureForOperation(account,mode);
         var existing=orders.findByIdempotencyKey(request.idempotencyKey());
-        if (existing.isPresent()) { ensureOwnership(existing.get(),companyId); return replay(existing.get()); }
+        if (existing.isPresent()) { ensureOwnership(existing.get(),companyId); ensureMode(existing.get(),mode); return replay(existing.get()); }
         BigDecimal qty=TroyWeightConverter.toTroyOunces(request.quantity(),request.unit());
-        var quotes=quotes(account,request.asset(),false,balances.forOperation(balanceSnapshot));
-        var limitQuotes=account.positionLimit()==null?quotes:quotes(account,request.asset(),true,balances.forOperation(balanceSnapshot));
+        var quotes=quotes(account,request.asset(),false,balances.forOperation(balanceSnapshot),mode);
+        var limitQuotes=account.positionLimit()==null?quotes:quotes(account,request.asset(),true,balances.forOperation(balanceSnapshot),mode);
         return transactions.execute(status->{
             var locked=accounts.lockById(account.id()).orElseThrow();
+            AccountService.requireMode(locked,mode);
             ensureTradingAllowed(locked);
             var duplicate=orders.findByIdempotencyKey(request.idempotencyKey());
-            if (duplicate.isPresent()) { ensureOwnership(duplicate.get(),companyId); return replay(duplicate.get()); }
+            if (duplicate.isPresent()) { ensureOwnership(duplicate.get(),companyId); ensureMode(duplicate.get(),mode); return replay(duplicate.get()); }
             var config=config(request.asset(),qty);
             var quote=quotes.get(request.asset());
             boolean buy=request.side()==OrderSide.BUY;
@@ -92,10 +115,11 @@ public class OrderExecutionService {
             long id=orders.insertDraft(locked.id(),companyId,request.asset(),quote.pair(),request.side(),request.quantity(),request.unit(),qty,
                     buy?quote.marketAsk():quote.marketBid(),buy?quote.clientBuyPriceRaw():quote.clientSellPriceRaw(),indicative,
                     buy?quote.spreadBuy():quote.spreadSell(),quote.spreadConfigVersion(),request.idempotencyKey(),
-                    ClientOrderIdFactory.fromIdempotencyKey(request.idempotencyKey()));
+                    ClientOrderIdFactory.fromIdempotencyKey(request.idempotencyKey()),mode);
             if (id<0) {
                 var other=orders.findByIdempotencyKey(request.idempotencyKey()).orElseThrow();
                 ensureOwnership(other,companyId);
+                ensureMode(other,mode);
                 return replay(other);
             }
             var order=orders.lockById(id).orElseThrow();
@@ -118,20 +142,33 @@ public class OrderExecutionService {
      */
     @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public TradingOrder submit(long orderId,long companyId,long userId) {
+        return submit(orderId, companyId, userId, TradingMode.LIVE);
+    }
+
+    /** Carries the JWT mode so a DEMO request is rejected before any real provider call. */
+    @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    public TradingOrder submit(long orderId,long companyId,long userId,TradingMode tradingMode) {
+        final TradingMode mode=tradingMode==null?TradingMode.LIVE:tradingMode;
+        ensureDemoSubmissionAllowed(mode);
         var initial=orders.findById(orderId).orElseThrow(()->failure("ORDER_NOT_FOUND","Ordre introuvable",HttpStatus.NOT_FOUND));
         ensureOwnership(initial,companyId);
+        ensureMode(initial,mode);
         var account=accountForCompany(companyId);
+        AccountService.requireMode(account,mode);
         ensureTradingAllowed(account);
-        if (!gate.isOpen()) throw failure("EXECUTION_BLOCKED","Nouvelles transmissions bloquées",HttpStatus.SERVICE_UNAVAILABLE);
+        TradingProvider provider=providers.forMode(initial.tradingMode());
+        if (mode == TradingMode.LIVE && !gate.isOpen()) throw failure("EXECUTION_BLOCKED","Nouvelles transmissions bloquées",HttpStatus.SERVICE_UNAVAILABLE);
         if (!provider.supportsSpotOrderSubmission()) throw failure("PROVIDER_EXECUTION_NOT_READY","Transmission SPOT désactivée",HttpStatus.SERVICE_UNAVAILABLE);
         if (transmitted(initial)) return initial;
         if (initial.status()!=OrderStatus.DRAFT) throw failure("ORDER_NOT_SUBMITTABLE","Ordre non transmissible",HttpStatus.CONFLICT);
-        var balanceSnapshot=balances.captureForOperation(account);
-        var quotes=quotes(account,initial.asset(),true,balances.forOperation(balanceSnapshot));
+        var balanceSnapshot=balances.captureForOperation(account,mode);
+        var quotes=quotes(account,initial.asset(),true,balances.forOperation(balanceSnapshot),mode);
         var admitted=transactions.execute(status->{
             var lockedAccount=accounts.lockById(account.id()).orElseThrow();
             var order=orders.lockById(orderId).orElseThrow();
             ensureOwnership(order,companyId);
+            ensureMode(order,mode);
+            AccountService.requireMode(lockedAccount,mode);
             ensureTradingAllowed(lockedAccount);
             if (transmitted(order)) return new Submission(order,lockedAccount,false,null);
             if (order.status()!=OrderStatus.DRAFT) throw failure("ORDER_NOT_SUBMITTABLE","Ordre non transmissible",HttpStatus.CONFLICT);
@@ -160,7 +197,7 @@ public class OrderExecutionService {
         OrderAcknowledgement ack;
         try {
             ack=provider.submitSpotOrder(new SpotOrderRequest(admitted.order().clOrdId(),admitted.order().pair(),
-                    admitted.order().side(),admitted.order().quantityOz()));
+                    admitted.order().side(),admitted.order().quantityOz(),admitted.order().tradingMode()));
         } catch (RuntimeException uncertain) {
             orders.markPendingUnknown(orderId,"PROVIDER_UNCERTAIN",uncertain.getClass().getSimpleName());
             return orders.findById(orderId).orElseThrow();
@@ -171,11 +208,11 @@ public class OrderExecutionService {
         return orders.findById(orderId).orElseThrow();
     }
 
-    private Map<Asset,ClientQuote> quotes(TradingAccount account,Asset traded,boolean execution,List<Balance> snapshot) {
+    private Map<Asset,ClientQuote> quotes(TradingAccount account,Asset traded,boolean execution,List<Balance> snapshot,TradingMode tradingMode) {
         var assets=EnumSet.of(traded);
         for (var balance:snapshot)
             if (balance.asset().isMetal() && balance.quantity().signum()!=0) assets.add(balance.asset());
-        for (var commitment:reservationRepository.activeCloseCommitments(account.id(),-1))
+        for (var commitment:reservationRepository.activeCloseCommitments(account.id(),-1,tradingMode))
             if (commitment.transmitted()) assets.add(commitment.asset());
         var result=new EnumMap<Asset,ClientQuote>(Asset.class);
         for (var asset:assets) result.put(asset,execution?pricing.quoteForExecution(account.companyId(),asset,account.baseCurrency())
@@ -204,8 +241,15 @@ public class OrderExecutionService {
     private void ensureTradingAllowed(TradingAccount account) {
         if (account.status()!=AccountStatus.ACTIVE) throw failure("ACCOUNT_NOT_ACTIVE","Compte Trading non actif",HttpStatus.CONFLICT);
     }
+    private void ensureDemoSubmissionAllowed(TradingMode tradingMode) {
+        demoGuard.assertSubmissionAllowed(tradingMode);
+    }
     private void ensureOwnership(TradingOrder order,long companyId) {
         if (order.companyId()!=companyId) throw failure("ORDER_NOT_FOUND","Ordre introuvable",HttpStatus.NOT_FOUND);
+    }
+    private void ensureMode(TradingOrder order,TradingMode mode) {
+        if (order.tradingMode()!=mode) throw failure("ORDER_TRADING_MODE_MISMATCH",
+                "Le mode de l'ordre ne correspond pas au contexte du jeton.",HttpStatus.CONFLICT);
     }
     private static TradingException failure(String code,String message,HttpStatus status) { return new TradingException(status,code,message); }
     private record Submission(TradingOrder order,TradingAccount account,boolean send,TradingException error) { }

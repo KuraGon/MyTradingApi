@@ -384,7 +384,7 @@ class RuleBTradingIntegrationTest {
             Object id=call.callRealMethod();
             if (call.getArgument(4)==ReservationKind.POSITION_CLOSE) throw new IllegalStateException("injected after close");
             return id;
-        }).when(reservations).upsert(eq(accountId),any(),any(),anyLong(),any(),any());
+        }).when(reservations).upsert(eq(accountId),any(),any(),anyLong(),any(),any(),eq(TradingMode.LIVE));
         assertThatThrownBy(()->service.preview(companyId,1,request)).isInstanceOf(IllegalStateException.class);
         assertThat(orders.findByIdempotencyKey(request.idempotencyKey())).isEmpty();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_reservation WHERE account_id=?",Integer.class,accountId)).isZero();

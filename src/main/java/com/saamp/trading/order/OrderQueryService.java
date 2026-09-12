@@ -4,6 +4,7 @@ import com.saamp.trading.account.TradingAccount;
 import com.saamp.trading.api.OrderPageView;
 import com.saamp.trading.api.OrderView;
 import com.saamp.trading.common.TradingException;
+import com.saamp.trading.domain.TradingMode;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -31,6 +32,10 @@ public class OrderQueryService {
         return orders.findByIdAndAccountId(orderId, account.id()).map(OrderView::from)
                 .orElseThrow(() -> new TradingException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", "Ordre introuvable"));
     }
+    public OrderView detail(TradingAccount account, long orderId, TradingMode tradingMode) {
+        return orders.findByIdAndAccountId(orderId, account.id(), tradingMode).map(OrderView::from)
+                .orElseThrow(() -> new TradingException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", "Ordre introuvable"));
+    }
 
     /**
      * Construit une page keyset stable, sans OFFSET, dans le seul compte courant.
@@ -42,7 +47,13 @@ public class OrderQueryService {
      */
     public OrderPageView page(TradingAccount account, Long cursor, Integer requestedLimit) {
         int pageSize = requestedLimit == null ? DEFAULT_PAGE_SIZE : Math.min(Math.max(requestedLimit, 1), MAX_PAGE_SIZE);
-        var found = orders.findPage(account.id(), cursor, pageSize + 1);
+        return page(orders.findPage(account.id(), cursor, pageSize + 1), pageSize);
+    }
+    public OrderPageView page(TradingAccount account, Long cursor, Integer requestedLimit, TradingMode tradingMode) {
+        int pageSize = requestedLimit == null ? DEFAULT_PAGE_SIZE : Math.min(Math.max(requestedLimit, 1), MAX_PAGE_SIZE);
+        return page(orders.findPage(account.id(), cursor, pageSize + 1, tradingMode), pageSize);
+    }
+    private OrderPageView page(java.util.List<TradingOrder> found, int pageSize) {
         boolean hasMore = found.size() > pageSize;
         var pageOrders = hasMore ? found.subList(0, pageSize) : found;
         var items = pageOrders.stream().map(OrderView::from).toList();

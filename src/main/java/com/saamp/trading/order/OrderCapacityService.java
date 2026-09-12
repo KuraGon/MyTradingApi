@@ -82,9 +82,11 @@ public class OrderCapacityService {
     public Admission reserve(TradingAccount account, TradingOrder order, Map<Asset,ClientQuote> quotes,
             Map<Asset,ClientQuote> limitQuotes, AssetConfig config, OffsetDateTime expiry, boolean execution,
             EffectiveBalanceSnapshot acquired) {
-        if (reservations.hasActiveTransmittedLegacy(account.id()))
+        TradingMode tradingMode = tradingMode(order);
+        boolean scopedMode = order.tradingMode() != null;
+        if (hasActiveTransmittedLegacy(account.id(),tradingMode,scopedMode))
             throw failure("LEGACY_COMMITMENT_UNRESOLVED","Un engagement historique transmis doit être résolu avant une nouvelle admission");
-        var snapshot=acquired==null?balances.findAll(account.id()):balances.validate(account,acquired);
+        var snapshot=balanceSnapshot(account,acquired,tradingMode,scopedMode);
         BigDecimal funds=BigDecimal.ZERO;
         BigDecimal position=BigDecimal.ZERO;
         var valued=new ArrayList<AccountPosition>();
@@ -131,15 +133,15 @@ public class OrderCapacityService {
                 :BigDecimal.ZERO;
         if (order.side()==OrderSide.BUY)
             cash=cash.max(money(order.quantityOz().multiply(settlementBounds.maximum()))).setScale(6,RoundingMode.CEILING);
-        BigDecimal availableCash=funds.subtract(reservations.cashReserved(account.id(),account.baseCurrency(),order.id()));
+        BigDecimal availableCash=funds.subtract(cashReserved(account.id(),account.baseCurrency(),order.id(),tradingMode,scopedMode));
         if (order.side()==OrderSide.BUY && availableCash.compareTo(cash)<0)
             throw failure("INSUFFICIENT_AVAILABLE_BALANCE","Liquidité devise insuffisante");
         var result=OrderRiskProjection.calculate(position,order.quantityOz(),
-                reservations.closeReserved(account.id(),order.asset(),order.side(),order.id()),order.side(),
+                closeReserved(account.id(),order.asset(),order.side(),order.id(),tradingMode,scopedMode),order.side(),
                 quote.clientBuyPrice(),quote.clientSellPrice(),envelope,rates.get(order.asset()));
         var current=RiskCalculator.calculateAccountPositions(funds,valued);
-        BigDecimal availableFree=current.freeEquity().subtract(reservations.riskReserved(account.id(),account.baseCurrency(),order.id()));
-        availableFree=availableFree.subtract(unbackedTransmittedRisk(account,order.id(),quantities,rates,quotes,execution));
+        BigDecimal availableFree=current.freeEquity().subtract(riskReserved(account.id(),account.baseCurrency(),order.id(),tradingMode,scopedMode));
+        availableFree=availableFree.subtract(unbackedTransmittedRisk(account,order.id(),quantities,rates,quotes,execution,tradingMode,scopedMode));
         BigDecimal projectedFree=availableFree.add(result.freeEquityDelta());
         if (availableFree.signum()<0) {
             if (result.closeQty().compareTo(order.quantityOz())!=0 || result.openQty().signum()!=0
@@ -156,19 +158,20 @@ public class OrderCapacityService {
         if (account.positionLimit()!=null && money(projectedGross).compareTo(account.positionLimit())>0)
             throw failure("POSITION_LIMIT_EXCEEDED","Exposition brute projetée au-dessus de la limite");
         reservations.releaseForOrder(order.id());
-        put(account,order,account.baseCurrency(),ReservationKind.CASH,cash,expiry);
-        put(account,order,order.asset(),ReservationKind.POSITION_CLOSE,result.closeQty(),expiry);
-        put(account,order,account.baseCurrency(),ReservationKind.RISK,result.riskRequired(),expiry);
+        put(account,order,account.baseCurrency(),ReservationKind.CASH,cash,expiry,tradingMode,scopedMode);
+        put(account,order,order.asset(),ReservationKind.POSITION_CLOSE,result.closeQty(),expiry,tradingMode,scopedMode);
+        put(account,order,account.baseCurrency(),ReservationKind.RISK,result.riskRequired(),expiry,tradingMode,scopedMode);
         return new Admission(cash,result.closeQty(),result.riskRequired(),result.projectedPosition(),
                 current.netEquity().add(result.netEquityDelta()),current.marginRequirement().add(result.marginDelta()),projectedFree);
     }
 
     /** Reconstitue uniquement le supplément de risque des fermetures transmises devenues découvertes. */
     private BigDecimal unbackedTransmittedRisk(TradingAccount account,long excludedOrder,
-            Map<Asset,BigDecimal> positions,Map<Asset,BigDecimal> rates,Map<Asset,ClientQuote> quotes,boolean execution) {
+            Map<Asset,BigDecimal> positions,Map<Asset,BigDecimal> rates,Map<Asset,ClientQuote> quotes,boolean execution,
+            TradingMode tradingMode, boolean scopedMode) {
         var allocated=new EnumMap<Asset,BigDecimal>(Asset.class);
         BigDecimal extra=BigDecimal.ZERO;
-        for (var commitment:reservations.activeCloseCommitments(account.id(),excludedOrder)) {
+        for (var commitment:activeCloseCommitments(account.id(),excludedOrder,tradingMode,scopedMode)) {
             BigDecimal position=positions.getOrDefault(commitment.asset(),BigDecimal.ZERO);
             BigDecimal closable=(commitment.side()==OrderSide.SELL?position:position.negate()).max(BigDecimal.ZERO);
             BigDecimal used=allocated.getOrDefault(commitment.asset(),BigDecimal.ZERO);
@@ -219,8 +222,42 @@ public class OrderCapacityService {
         if (age.isNegative() || age.compareTo(max)>0) throw failure("MARKET_PRICE_STALE","Cotation expirée pendant l'admission");
         return quote;
     }
-    private void put(TradingAccount account, TradingOrder order, Asset asset, ReservationKind kind, BigDecimal amount, OffsetDateTime expiry) {
-        if (amount.signum()>0) reservations.upsert(account.id(),asset,amount,order.id(),kind,expiry);
+    private void put(TradingAccount account, TradingOrder order, Asset asset, ReservationKind kind, BigDecimal amount,
+                     OffsetDateTime expiry, TradingMode tradingMode, boolean scopedMode) {
+        if (amount.signum()>0) {
+            if (scopedMode) reservations.upsert(account.id(),asset,amount,order.id(),kind,expiry,tradingMode);
+            else reservations.upsert(account.id(),asset,amount,order.id(),kind,expiry);
+        }
+    }
+    private static TradingMode tradingMode(TradingOrder order) {
+        return order.tradingMode() == null ? TradingMode.LIVE : order.tradingMode();
+    }
+    private boolean hasActiveTransmittedLegacy(long accountId, TradingMode tradingMode, boolean scopedMode) {
+        return scopedMode ? reservations.hasActiveTransmittedLegacy(accountId,tradingMode)
+                : reservations.hasActiveTransmittedLegacy(accountId);
+    }
+    private List<Balance> balanceSnapshot(TradingAccount account, EffectiveBalanceSnapshot acquired,
+                                          TradingMode tradingMode, boolean scopedMode) {
+        if (acquired == null) return scopedMode ? balances.findAll(account.id(),tradingMode) : balances.findAll(account.id());
+        return scopedMode ? balances.validate(account,acquired,tradingMode) : balances.validate(account,acquired);
+    }
+    private BigDecimal cashReserved(long accountId, Asset asset, long orderId, TradingMode tradingMode, boolean scopedMode) {
+        return scopedMode ? reservations.cashReserved(accountId,asset,orderId,tradingMode)
+                : reservations.cashReserved(accountId,asset,orderId);
+    }
+    private BigDecimal closeReserved(long accountId, Asset asset, OrderSide side, long orderId,
+                                     TradingMode tradingMode, boolean scopedMode) {
+        return scopedMode ? reservations.closeReserved(accountId,asset,side,orderId,tradingMode)
+                : reservations.closeReserved(accountId,asset,side,orderId);
+    }
+    private BigDecimal riskReserved(long accountId, Asset asset, long orderId, TradingMode tradingMode, boolean scopedMode) {
+        return scopedMode ? reservations.riskReserved(accountId,asset,orderId,tradingMode)
+                : reservations.riskReserved(accountId,asset,orderId);
+    }
+    private List<ReservationRepository.CloseCommitment> activeCloseCommitments(long accountId, long excludedOrder,
+                                                                                 TradingMode tradingMode, boolean scopedMode) {
+        return scopedMode ? reservations.activeCloseCommitments(accountId,excludedOrder,tradingMode)
+                : reservations.activeCloseCommitments(accountId,excludedOrder);
     }
     private static BigDecimal valuation(BigDecimal quantity, ClientQuote quote) {
         return money(quantity.multiply(quantity.signum()<0?quote.clientBuyPrice():quote.clientSellPrice()));

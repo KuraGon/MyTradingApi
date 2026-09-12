@@ -2,6 +2,7 @@ package com.saamp.trading.reservation;
 
 import com.saamp.trading.domain.Asset;
 import com.saamp.trading.domain.OrderSide;
+import com.saamp.trading.domain.TradingMode;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.Optional;
@@ -27,8 +28,12 @@ public class ReservationRepository {
      * @param asset actif
      * @return cash ou fermetures SELL, jamais RISK */
     public BigDecimal activeReserved(long accountId, Asset asset) {
-        return asset.isCurrency() ? cashReserved(accountId,asset,-1)
-                : closeReserved(accountId,asset,OrderSide.SELL,-1);
+        return activeReserved(accountId, asset, TradingMode.LIVE);
+    }
+
+    public BigDecimal activeReserved(long accountId, Asset asset, TradingMode tradingMode) {
+        return asset.isCurrency() ? cashReserved(accountId,asset,-1,tradingMode)
+                : closeReserved(accountId,asset,OrderSide.SELL,-1,tradingMode);
     }
 
     /**
@@ -37,7 +42,10 @@ public class ReservationRepository {
      * @param excludedOrder ordre recalculé
      * @return liquidité engagée */
     public BigDecimal cashReserved(long accountId, Asset asset, long excludedOrder) {
-        return sum(accountId,asset,excludedOrder,"r.reservation_kind IN ('CASH','LEGACY')");
+        return sumLegacy(accountId,asset,excludedOrder,"r.reservation_kind IN ('CASH','LEGACY')");
+    }
+    public BigDecimal cashReserved(long accountId, Asset asset, long excludedOrder, TradingMode tradingMode) {
+        return sum(accountId,asset,excludedOrder,"r.reservation_kind IN ('CASH','LEGACY')",tradingMode);
     }
 
     /**
@@ -46,7 +54,10 @@ public class ReservationRepository {
      * @param excludedOrder ordre recalculé
      * @return capacité engagée */
     public BigDecimal riskReserved(long accountId, Asset asset, long excludedOrder) {
-        return sum(accountId,asset,excludedOrder,"r.reservation_kind IN ('RISK','LEGACY')");
+        return sumLegacy(accountId,asset,excludedOrder,"r.reservation_kind IN ('RISK','LEGACY')");
+    }
+    public BigDecimal riskReserved(long accountId, Asset asset, long excludedOrder, TradingMode tradingMode) {
+        return sum(accountId,asset,excludedOrder,"r.reservation_kind IN ('RISK','LEGACY')",tradingMode);
     }
 
     /**
@@ -56,8 +67,12 @@ public class ReservationRepository {
      * @param excludedOrder ordre recalculé
      * @return fermetures déjà attribuées */
     public BigDecimal closeReserved(long accountId, Asset asset, OrderSide side, long excludedOrder) {
-        return sum(accountId,asset,excludedOrder,
+        return sumLegacy(accountId,asset,excludedOrder,
                 "(r.reservation_kind='LEGACY' OR (r.reservation_kind='POSITION_CLOSE' AND o.side='"+side.name()+"'))");
+    }
+    public BigDecimal closeReserved(long accountId, Asset asset, OrderSide side, long excludedOrder, TradingMode tradingMode) {
+        return sum(accountId,asset,excludedOrder,
+                "(r.reservation_kind='LEGACY' OR (r.reservation_kind='POSITION_CLOSE' AND o.side='"+side.name()+"'))",tradingMode);
     }
 
     /**
@@ -71,6 +86,13 @@ public class ReservationRepository {
                   WHERE r.account_id=? AND r.reservation_kind='LEGACY' AND r.status='ACTIVE'
                     AND o.status IN ('PENDING','PENDING_UNKNOWN'))
                 """,Boolean.class,accountId));
+    }
+    public boolean hasActiveTransmittedLegacy(long accountId, TradingMode tradingMode) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM trading_reservation r JOIN trading_order o ON o.id=r.order_id
+                  WHERE r.account_id=? AND r.reservation_kind='LEGACY' AND r.status='ACTIVE'
+                    AND r.trading_mode=? AND o.trading_mode=? AND o.status IN ('PENDING','PENDING_UNKNOWN'))
+                """,Boolean.class,accountId,tradingMode.name(),tradingMode.name()));
     }
 
     /**
@@ -99,6 +121,25 @@ public class ReservationRepository {
                         rs.getBigDecimal("indicative_client_price"),rs.getBigDecimal("drift_tolerance"),
                         rs.getBoolean("transmitted")),accountId,excludedOrder);
     }
+    public java.util.List<CloseCommitment> activeCloseCommitments(long accountId,long excludedOrder, TradingMode tradingMode) {
+        return jdbc.query("""
+                SELECT o.asset,o.side,o.quantity_oz,o.indicative_client_price,c.drift_tolerance,
+                  o.status IN ('PENDING','PENDING_UNKNOWN') AS transmitted,
+                  SUM(r.quantity) FILTER (WHERE r.reservation_kind='POSITION_CLOSE') AS close_quantity,
+                  COALESCE(SUM(r.quantity) FILTER (WHERE r.reservation_kind='RISK'),0) AS risk_quantity
+                FROM trading_order o JOIN trading_reservation r ON r.order_id=o.id
+                LEFT JOIN trading_asset_config c ON c.asset=o.asset
+                WHERE o.account_id=? AND o.id<>? AND o.trading_mode=? AND r.trading_mode=? AND
+                """+ACTIVE+"""
+                GROUP BY o.id,c.drift_tolerance
+                HAVING SUM(r.quantity) FILTER (WHERE r.reservation_kind='POSITION_CLOSE')>0
+                ORDER BY o.id
+                """,(rs,n)->new CloseCommitment(Asset.valueOf(rs.getString("asset")),
+                        OrderSide.valueOf(rs.getString("side")),rs.getBigDecimal("quantity_oz"),
+                        rs.getBigDecimal("close_quantity"),rs.getBigDecimal("risk_quantity"),
+                        rs.getBigDecimal("indicative_client_price"),rs.getBigDecimal("drift_tolerance"),
+                        rs.getBoolean("transmitted")),accountId,excludedOrder,tradingMode.name(),tradingMode.name());
+    }
 
     /**
      * Instantané de lecture ; ne remplace aucune réservation persistée.
@@ -123,7 +164,16 @@ public class ReservationRepository {
         return jdbc.update("UPDATE trading_reservation SET status='EXPIRED' WHERE order_id=? AND status='ACTIVE'",orderId);
     }
 
-    private BigDecimal sum(long accountId, Asset asset, long excludedOrder, String kind) {
+    private BigDecimal sum(long accountId, Asset asset, long excludedOrder, String kind, TradingMode tradingMode) {
+        return jdbc.queryForObject("""
+                SELECT COALESCE(SUM(r.quantity),0) FROM trading_reservation r
+                LEFT JOIN trading_order o ON o.id=r.order_id
+                WHERE r.account_id=? AND r.asset=? AND r.trading_mode=? AND (r.order_id IS NULL OR r.order_id<>?) AND
+                """+ACTIVE+" AND "+kind, BigDecimal.class,accountId,asset.name(),tradingMode.name(),excludedOrder);
+    }
+
+    /** Compatibility path for callers and historical-schema tests that do not carry a trading mode. */
+    private BigDecimal sumLegacy(long accountId, Asset asset, long excludedOrder, String kind) {
         return jdbc.queryForObject("""
                 SELECT COALESCE(SUM(r.quantity),0) FROM trading_reservation r
                 LEFT JOIN trading_order o ON o.id=r.order_id
@@ -159,6 +209,17 @@ public class ReservationRepository {
                 DO UPDATE SET quantity=EXCLUDED.quantity,status='ACTIVE',expires_at=EXCLUDED.expires_at
                 RETURNING id
                 """,Long.class,accountId,asset.name(),quantity,orderId,kind.name(),expiresAt);
+    }
+    public long upsert(long accountId, Asset asset, BigDecimal quantity, long orderId,
+                       ReservationKind kind, OffsetDateTime expiresAt, TradingMode tradingMode) {
+        if (kind==ReservationKind.LEGACY) throw new IllegalArgumentException("LEGACY is migration-only");
+        return jdbc.queryForObject("""
+                INSERT INTO trading_reservation(account_id,asset,quantity,order_id,reservation_kind,status,expires_at,trading_mode)
+                VALUES (?,?,?,?,?,'ACTIVE',?,?)
+                ON CONFLICT (order_id,reservation_kind,asset)
+                DO UPDATE SET quantity=EXCLUDED.quantity,status='ACTIVE',expires_at=EXCLUDED.expires_at
+                RETURNING id
+                """,Long.class,accountId,asset.name(),quantity,orderId,kind.name(),expiresAt,tradingMode.name());
     }
 
     /**

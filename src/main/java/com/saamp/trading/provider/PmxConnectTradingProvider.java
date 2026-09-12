@@ -1,6 +1,8 @@
 package com.saamp.trading.provider;
 
 import com.saamp.trading.config.TradingProperties;
+import com.saamp.trading.domain.TradingMode;
+import com.saamp.trading.security.TradingDemoGuard;
 import com.saamp.trading.order.ExecutionGateRepository;
 import com.saamp.trading.provider.pmx.PmxConnectException;
 import com.saamp.trading.provider.pmx.PmxConnectJson;
@@ -46,11 +48,13 @@ public class PmxConnectTradingProvider implements TradingProvider {
     private final PmxConnectJson json;
     private final HttpClient http;
     private final PmxTokenInfo tokenInfo;
+    private final TradingDemoGuard demoGuard;
 
     public PmxConnectTradingProvider(TradingProperties properties,
                                      ExecutionGateRepository executionGate,
                                      ProviderAccountRepository providerAccounts) {
         this.config = properties.getProvider().getPmx();
+        this.demoGuard = new TradingDemoGuard(properties);
         this.executionGate = executionGate;
         this.providerAccounts = providerAccounts;
         this.json = new PmxConnectJson();
@@ -86,6 +90,11 @@ public class PmxConnectTradingProvider implements TradingProvider {
 
     @Override
     public OrderAcknowledgement submitSpotOrder(SpotOrderRequest request) {
+        if (request != null && request.tradingMode() == TradingMode.DEMO) {
+            throw new com.saamp.trading.common.TradingException(org.springframework.http.HttpStatus.FORBIDDEN,
+                    "DEMO_REAL_PROVIDER_FORBIDDEN", "Un ordre DEMO ne peut pas atteindre le provider reel.");
+        }
+        demoGuard.assertRealProviderSubmissionAllowed();
         throw new UnsupportedOperationException(
                 "PMXConnect /Trade remains disabled until a UAT TokenID validates the exact success/InProcess payloads");
     }

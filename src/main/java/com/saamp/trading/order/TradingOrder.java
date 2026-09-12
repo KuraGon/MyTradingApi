@@ -14,4 +14,5 @@ public record TradingOrder(long id, long accountId, long companyId, Long batchId
                            BigDecimal grossAmount, String idempotencyKey, String clOrdId, String stonexExid,
                            String stonexErrorCode, String stonexErrorMessage, int resolutionAttempts,
                            OffsetDateTime unknownSince, OffsetDateTime nextResolutionAt, OffsetDateTime manualReviewAt,
-                           OffsetDateTime createdAt, OffsetDateTime submittedAt, OffsetDateTime executedAt) {}
+                           OffsetDateTime createdAt, OffsetDateTime submittedAt, OffsetDateTime executedAt,
+                           TradingMode tradingMode) {}

@@ -7,11 +7,13 @@ import com.saamp.trading.domain.*;
 import com.saamp.trading.pricing.*;
 import com.saamp.trading.provider.*;
 import com.saamp.trading.reservation.*;
+import com.saamp.trading.domain.TradingMode;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.*;
 import org.junit.jupiter.api.*;
 import org.springframework.transaction.PlatformTransactionManager;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -20,6 +22,7 @@ import static org.mockito.ArgumentMatchers.*;
 class OrderExecutionServiceTest {
     AccountRepository accounts=mock(AccountRepository.class);
     BalanceRepository balances=mock(BalanceRepository.class);
+    DemoBalanceRepository demoBalances=mock(DemoBalanceRepository.class);
     PricingRepository configs=mock(PricingRepository.class);
     PricingService pricing=mock(PricingService.class);
     ReservationRepository reservations=mock(ReservationRepository.class);
@@ -32,6 +35,7 @@ class OrderExecutionServiceTest {
     TradingOrder order;
     TradingAccount account;
     ClientQuote quote;
+    TradingProperties properties;
 
     @BeforeEach void setup() {
         account=new TradingAccount(7,42,Asset.EUR,AccountStatus.ACTIVE,null,null,null,1,OffsetDateTime.now(),OffsetDateTime.now());
@@ -40,6 +44,7 @@ class OrderExecutionServiceTest {
         when(order.asset()).thenReturn(Asset.XAU); when(order.side()).thenReturn(OrderSide.BUY);
         when(order.quantityOz()).thenReturn(BigDecimal.ONE); when(order.status()).thenReturn(OrderStatus.DRAFT);
         when(order.indicativeClientPrice()).thenReturn(new BigDecimal("100"));
+        when(order.tradingMode()).thenReturn(TradingMode.LIVE);
         when(order.createdAt()).thenReturn(OffsetDateTime.now());
         when(order.clOrdId()).thenReturn("CL-123"); when(order.pair()).thenReturn("XAUEUR");
         quote=new ClientQuote(Asset.XAU,"XAUEUR",new BigDecimal("99"),new BigDecimal("100"),
@@ -53,8 +58,10 @@ class OrderExecutionServiceTest {
         when(configs.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(new AssetConfig(Asset.XAU,new BigDecimal("0.000001"),6,new BigDecimal("0.002"),true)));
         when(orders.markPending(123)).thenReturn(1);
         when(provider.submitSpotOrder(any())).thenReturn(new OrderAcknowledgement(AcknowledgementState.IN_PROCESS,"CL-123",null,null,null,null));
-        service=new OrderExecutionService(accounts,new EffectiveBalanceService(balances,accounts,null,null,new EffectiveBalanceProperties()),configs,pricing,reservations,orders,provider,events,gate,capacity,
-                new TradingProperties(),mock(PlatformTransactionManager.class));
+        properties = new TradingProperties();
+        when(demoBalances.findAll(7L)).thenReturn(List.of(new Balance(7L, Asset.EUR, new BigDecimal("1000"), OffsetDateTime.now())));
+        service=new OrderExecutionService(accounts,new EffectiveBalanceService(balances,accounts,null,null,new EffectiveBalanceProperties(),demoBalances,new SimpleMeterRegistry()),configs,pricing,reservations,orders,provider,events,gate,capacity,
+                properties,mock(PlatformTransactionManager.class));
     }
 
     @Test void submitRecalculatesBeforeConditionalTransitionAndProvider() {
@@ -100,6 +107,45 @@ class OrderExecutionServiceTest {
         assertThatThrownBy(()->service.submit(123,42,99)).isInstanceOfSatisfying(TradingException.class,
                 e->assertThat(e.getCode()).isEqualTo("PROVIDER_EXECUTION_NOT_READY"));
         verifyNoInteractions(pricing); verify(provider,never()).submitSpotOrder(any());
+    }
+
+    @Test void demoOrderCannotUseALiveAccount() {
+        properties.getDemo().setEnabled(true);
+        properties.getProvider().setMode("PMXCONNECT");
+        when(order.tradingMode()).thenReturn(TradingMode.DEMO);
+
+        assertThatThrownBy(() -> service.submit(123,42,99,TradingMode.DEMO))
+                .isInstanceOfSatisfying(TradingException.class,
+                        error -> assertThat(error.getCode()).isEqualTo("ACCOUNT_TRADING_MODE_MISMATCH"));
+        verifyNoInteractions(pricing, capacity);
+        verify(provider, never()).submitSpotOrder(any());
+    }
+
+    @Test void demoUsesLocalSimulatorEvenWithPmxLiveProviderAndClosedLiveGate() {
+        properties.getDemo().setEnabled(true);
+        when(order.tradingMode()).thenReturn(TradingMode.DEMO);
+
+        properties.getProvider().setMode("PMXCONNECT");
+        when(gate.isOpen()).thenReturn(false);
+        account=new TradingAccount(7,42,Asset.EUR,AccountStatus.ACTIVE,null,null,null,
+                null,null,null,1,OffsetDateTime.now(),OffsetDateTime.now(),TradingMode.DEMO);
+        when(accounts.findByCompanyId(42)).thenReturn(Optional.of(account));
+        when(accounts.lockById(7)).thenReturn(Optional.of(account));
+        when(configs.findMarketPrice("XAUEUR")).thenReturn(Optional.of(new MarketPrice("XAUEUR",
+                new BigDecimal("99"),new BigDecimal("100"),new BigDecimal("99.5"),OffsetDateTime.now(),"PMXCONNECT",OffsetDateTime.now())));
+        service.submit(123,42,99,TradingMode.DEMO);
+
+        verifyNoInteractions(provider);
+        verify(events).handleFilled(eq(order),eq(account),startsWith("SIM-"),eq(new BigDecimal("100")),eq(quote),eq("user:99"));
+    }
+
+    @Test void liveDraftCannotBeSubmittedAsDemo() {
+        properties.getDemo().setEnabled(true);
+
+        assertThatThrownBy(() -> service.submit(123,42,99,TradingMode.DEMO))
+                .isInstanceOfSatisfying(TradingException.class,
+                        error -> assertThat(error.getCode()).isEqualTo("ORDER_TRADING_MODE_MISMATCH"));
+        verify(provider, never()).submitSpotOrder(any());
     }
 
     @Test void stalePriceDoesNotReserveOrSend() {

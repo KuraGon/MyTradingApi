@@ -19,15 +19,24 @@ public class OrderRepository {
                             java.math.BigDecimal indicativeMarket, java.math.BigDecimal indicativeClientRaw,
                             java.math.BigDecimal indicativeClient, java.math.BigDecimal spread, int spreadVersion,
                             String idempotencyKey, String clOrdId) {
+        return insertDraft(accountId, companyId, asset, pair, side, requestedQty, requestedUnit, qtyOz,
+                indicativeMarket, indicativeClientRaw, indicativeClient, spread, spreadVersion,
+                idempotencyKey, clOrdId, TradingMode.LIVE);
+    }
+    public long insertDraft(long accountId, long companyId, Asset asset, String pair, OrderSide side,
+                            java.math.BigDecimal requestedQty, QuantityUnit requestedUnit, java.math.BigDecimal qtyOz,
+                            java.math.BigDecimal indicativeMarket, java.math.BigDecimal indicativeClientRaw,
+                            java.math.BigDecimal indicativeClient, java.math.BigDecimal spread, int spreadVersion,
+                            String idempotencyKey, String clOrdId, TradingMode tradingMode) {
         var ids = jdbc.query("""
                 INSERT INTO trading_order(account_id,company_id,asset,pair,side,order_type,requested_quantity,requested_unit,
                   quantity_oz,status,indicative_price,indicative_client_price_raw,indicative_client_price,spread_applied,spread_config_version,
-                  idempotency_key,cl_ord_id)
-                VALUES (?,?,?,?,?,'SPOT',?,?,?,'DRAFT',?,?,?,?,?,?,?)
+                  idempotency_key,cl_ord_id,trading_mode)
+                VALUES (?,?,?,?,?,'SPOT',?,?,?,'DRAFT',?,?,?,?,?,?,?,?)
                 ON CONFLICT (idempotency_key) DO NOTHING
                 RETURNING id
                 """, (rs,n) -> rs.getLong(1), accountId,companyId,asset.name(),pair,side.name(),requestedQty,requestedUnit.name(),qtyOz,
-                indicativeMarket,indicativeClientRaw,indicativeClient,spread,spreadVersion,idempotencyKey,clOrdId);
+                indicativeMarket,indicativeClientRaw,indicativeClient,spread,spreadVersion,idempotencyKey,clOrdId,tradingMode.name());
         return ids.isEmpty() ? -1L : ids.getFirst();
     }
 
@@ -42,14 +51,20 @@ public class OrderRepository {
     }
     public Optional<TradingOrder> findByIdempotencyKey(String key) { return jdbc.query("SELECT * FROM trading_order WHERE idempotency_key=?", this::map, key).stream().findFirst(); }
     public List<TradingOrder> findPage(long accountId, Long cursor, int limit) {
+        return findPage(accountId, cursor, limit, TradingMode.LIVE);
+    }
+    public List<TradingOrder> findPage(long accountId, Long cursor, int limit, TradingMode tradingMode) {
         if (cursor == null) {
-            return jdbc.query("SELECT * FROM trading_order WHERE account_id=? ORDER BY id DESC LIMIT ?", this::map, accountId, limit);
+            return jdbc.query("SELECT * FROM trading_order WHERE account_id=? AND trading_mode=? ORDER BY id DESC LIMIT ?", this::map, accountId, tradingMode.name(), limit);
         }
-        return jdbc.query("SELECT * FROM trading_order WHERE account_id=? AND id<? ORDER BY id DESC LIMIT ?", this::map, accountId, cursor, limit);
+        return jdbc.query("SELECT * FROM trading_order WHERE account_id=? AND trading_mode=? AND id<? ORDER BY id DESC LIMIT ?", this::map, accountId, tradingMode.name(), cursor, limit);
     }
 
     public Optional<TradingOrder> findByIdAndAccountId(long id, long accountId) {
         return jdbc.query("SELECT * FROM trading_order WHERE id=? AND account_id=?", this::map, id, accountId).stream().findFirst();
+    }
+    public Optional<TradingOrder> findByIdAndAccountId(long id, long accountId, TradingMode tradingMode) {
+        return jdbc.query("SELECT * FROM trading_order WHERE id=? AND account_id=? AND trading_mode=?", this::map, id, accountId, tradingMode.name()).stream().findFirst();
     }
 
     /**
@@ -79,7 +94,7 @@ public class OrderRepository {
     }
 
     public List<TradingOrder> findPendingUnknownDue(int limit) {
-        return jdbc.query("SELECT * FROM trading_order WHERE (status='PENDING_UNKNOWN' AND next_resolution_at<=NOW()) OR (status='PENDING' AND submitted_at<=NOW()-INTERVAL '10 seconds') ORDER BY COALESCE(next_resolution_at,submitted_at) LIMIT ?", this::map, limit);
+        return jdbc.query("SELECT * FROM trading_order WHERE trading_mode='LIVE' AND ((status='PENDING_UNKNOWN' AND next_resolution_at<=NOW()) OR (status='PENDING' AND submitted_at<=NOW()-INTERVAL '10 seconds')) ORDER BY COALESCE(next_resolution_at,submitted_at) LIMIT ?", this::map, limit);
     }
 
     private TradingOrder map(ResultSet rs, int n) throws SQLException {
@@ -93,6 +108,7 @@ public class OrderRepository {
                 rs.getString("stonex_error_code"),rs.getString("stonex_error_message"),rs.getInt("resolution_attempts"),
                 rs.getObject("unknown_since",java.time.OffsetDateTime.class),rs.getObject("next_resolution_at",java.time.OffsetDateTime.class),
                 rs.getObject("manual_review_at",java.time.OffsetDateTime.class),rs.getObject("created_at",java.time.OffsetDateTime.class),
-                rs.getObject("submitted_at",java.time.OffsetDateTime.class),rs.getObject("executed_at",java.time.OffsetDateTime.class));
+                rs.getObject("submitted_at",java.time.OffsetDateTime.class),rs.getObject("executed_at",java.time.OffsetDateTime.class),
+                TradingMode.valueOf(rs.getString("trading_mode")));
     }
 }

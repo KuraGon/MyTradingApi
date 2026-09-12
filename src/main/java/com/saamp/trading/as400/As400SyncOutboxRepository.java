@@ -25,7 +25,8 @@ public class As400SyncOutboxRepository {
         jdbc.update("""
                 INSERT INTO trading_as400_sync_outbox(order_id,target,workflow_version,expected_leg_count,as400_ste,nucli_trading)
                 SELECT o.id,'SICOUVI',2,4,a.as400_ste,a.as400_nucli_trading
-                FROM trading_order o JOIN trading_account a ON a.id=o.account_id WHERE o.id=?
+                FROM trading_order o JOIN trading_account a ON a.id=o.account_id
+                WHERE o.id=? AND o.trading_mode='LIVE'
                 ON CONFLICT (order_id,target) DO NOTHING
                 """, orderId);
     }
@@ -39,11 +40,12 @@ public class As400SyncOutboxRepository {
         UUID claimToken = UUID.randomUUID();
         return jdbc.query("""
                 WITH due AS (
-                  SELECT id FROM trading_as400_sync_outbox
-                  WHERE target='SICOUVI' AND workflow_version=2 AND status IN ('PENDING','RETRY','PROCESSING')
-                    AND sync_state IN ('PENDING','SUBMITTED','ACCEPTED')
-                    AND next_attempt_at<=NOW()
-                  ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED
+                  SELECT e.id FROM trading_as400_sync_outbox e
+                  JOIN trading_order o ON o.id=e.order_id AND o.trading_mode='LIVE'
+                  WHERE e.target='SICOUVI' AND e.workflow_version=2 AND e.status IN ('PENDING','RETRY','PROCESSING')
+                    AND e.sync_state IN ('PENDING','SUBMITTED','ACCEPTED')
+                    AND e.next_attempt_at<=NOW()
+                  ORDER BY e.id LIMIT ? FOR UPDATE OF e SKIP LOCKED
                 )
                 UPDATE trading_as400_sync_outbox o
                 SET status='PROCESSING',claim_token=?,next_attempt_at=NOW()+(? * INTERVAL '1 second')

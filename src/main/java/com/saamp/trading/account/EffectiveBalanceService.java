@@ -17,25 +17,32 @@ import org.springframework.beans.factory.annotation.Autowired;
 @Service
 public class EffectiveBalanceService {
     private final BalanceRepository projection;
+    private final DemoBalanceRepository demoProjection;
     private final AccountRepository accounts;
     private final PendingTradingAdjustmentRepository adjustments;
     private final OfficialTradingBalanceReader official;
     private final EffectiveBalanceProperties config;
     private final ShadowBalanceDiagnostics shadow = new ShadowBalanceDiagnostics();
     private final EffectiveBalanceTelemetry telemetry;
-    /** @param projection projection locale @param accounts comptes @param adjustments overlay
-     * @param official lecteur officiel @param config configuration */
+    /** @param projection historique interne @param accounts identité trading @param adjustments faits persistés
+     * @param official lecture officielle @param config mode et fraîcheur technique */
     public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
             PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official, EffectiveBalanceProperties config) {
-        this(projection, accounts, adjustments, official, config, new SimpleMeterRegistry());
+        this(projection, accounts, adjustments, official, config, null, new SimpleMeterRegistry());
     }
-    /** @param projection projection locale @param accounts comptes @param adjustments overlay
-     * @param official lecteur officiel @param config configuration @param metrics mesures sans soldes */
-    @Autowired
+    /** @param projection historique interne @param accounts identite trading @param adjustments faits persistes
+     * @param official lecture officielle @param config mode @param metrics mesures techniques sans soldes */
     public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
             PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official,
             EffectiveBalanceProperties config, MeterRegistry metrics) {
-        this.projection=projection;this.accounts=accounts;this.adjustments=adjustments;this.official=official;this.config=config;
+        this(projection, accounts, adjustments, official, config, null, metrics);
+    }
+    /** Spring constructor; DEMO projection is deliberately independent from the AS400-aware LIVE projection. */
+    @Autowired
+    public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
+            PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official,
+            EffectiveBalanceProperties config, DemoBalanceRepository demoProjection, MeterRegistry metrics) {
+        this.projection=projection;this.demoProjection=demoProjection;this.accounts=accounts;this.adjustments=adjustments;this.official=official;this.config=config;
         this.telemetry = new EffectiveBalanceTelemetry(metrics);
     }
     /** @return mode imposant la source officielle pour toute décision */
@@ -44,9 +51,16 @@ public class EffectiveBalanceService {
     public boolean usesOfficial() { return config.getMode()!=EffectiveBalanceProperties.Mode.LEGACY; }
     /** @param accountId compte @return soldes selon le mode, sans fallback en ENFORCED */
     public List<Balance> findAll(long accountId) {
-        if(!usesOfficial()) return projection.findAll(accountId);
+
         var account=accounts.findById(accountId).orElseThrow(EffectiveBalanceService::unavailable);
         return forOperation(captureForOperation(account));
+    }
+    /** Resolves a DEMO request from the dedicated local projection, independently from EffectiveBalance mode. */
+    public List<Balance> findAll(long accountId, TradingMode tradingMode) {
+        var account=accounts.findById(accountId).orElseThrow(EffectiveBalanceService::unavailable);
+        AccountService.requireMode(account,tradingMode);
+        if (tradingMode == TradingMode.DEMO) return demoProjection().findAll(accountId);
+        return findAll(accountId);
     }
     /** @param account compte @return instantané borné acquis sans verrou PostgreSQL
      * @throws TradingException si ENFORCED et lecture non fiable
@@ -62,6 +76,7 @@ public class EffectiveBalanceService {
      * l'acquisition synchrone imposée par leur contrat.
      */
     public EffectiveBalanceSnapshot captureForOperation(TradingAccount account) {
+        if (account.accountMode()==TradingMode.DEMO) return captureForOperation(account,TradingMode.DEMO);
         config.validateConfiguration();
         if (config.getMode() != EffectiveBalanceProperties.Mode.SHADOW) return captureDiagnostic(account);
         Instant start = Instant.now();
@@ -71,10 +86,22 @@ public class EffectiveBalanceService {
         if (!"DIAGNOSTIC_PENDING".equals(reason)) telemetry.skipped(reason);
         return snapshot(account,start,false,reason,List.of(),Map.of(),Map.of(),Map.of(),List.of(),legacy,false);
     }
+    /**
+     * DEMO deliberately bypasses every official reader and every overlay. LIVE retains the existing
+     * EffectiveBalance contract, including ENFORCED failure-closed behaviour.
+     */
+    public EffectiveBalanceSnapshot captureForOperation(TradingAccount account, TradingMode tradingMode) {
+        AccountService.requireMode(account,tradingMode);
+        if (tradingMode != TradingMode.DEMO) return captureForOperation(account);
+        Instant start = Instant.now();
+        List<Balance> local = demoProjection().findAll(account.id());
+        return snapshot(account,start,true,null,List.of(),Map.of(),Map.of(),Map.of(),local,local,false);
+    }
 
     // Seul le diagnostic SHADOW en arriere-plan appelle cette collecte synchrone ;
     // ENFORCED la garde obligatoirement dans le fil de l'operation.
     EffectiveBalanceSnapshot captureDiagnostic(TradingAccount account) {
+        if (account.accountMode()==TradingMode.DEMO) return captureForOperation(account,TradingMode.DEMO);
         config.validateConfiguration();
         Instant start=Instant.now();
         if(!usesOfficial()) return snapshot(account,start,true,null,List.of(),Map.of(),Map.of(),Map.of(),List.of(),projection.findAll(account.id()),false);
@@ -152,6 +179,7 @@ public class EffectiveBalanceService {
      * @param account compte relu @param snapshot acquisition antérieure
      * @return soldes encore opposables @throws TradingException si faits ou fraîcheur modifiés */
     public List<Balance> validate(TradingAccount account,EffectiveBalanceSnapshot snapshot) {
+        if (account.accountMode()==TradingMode.DEMO) return validate(account,snapshot,TradingMode.DEMO);
         // En LEGACY/SHADOW, la decision locale est toujours relue sous verrou ACCOUNT.
         if(!snapshot.enforced()) return projection.findAll(account.id());
         if(snapshot.accountId()!=account.id() || !Objects.equals(snapshot.ste(),account.as400Ste())
@@ -159,6 +187,13 @@ public class EffectiveBalanceService {
                 || !snapshot.available() || !Instant.now().isBefore(snapshot.startedAt().plus(config.getMaxSnapshotAge()))
                 || !snapshot.facts().equals(adjustments.read(account.id()))) throw unavailable();
         return snapshot.decisionBalances();
+    }
+    /** Revalidates a DEMO decision only against its local projection. */
+    public List<Balance> validate(TradingAccount account, EffectiveBalanceSnapshot snapshot, TradingMode tradingMode) {
+        AccountService.requireMode(account,tradingMode);
+        if (snapshot.accountId()!=account.id()) throw unavailable();
+        if (tradingMode == TradingMode.DEMO) return demoProjection().findAll(account.id());
+        return validate(account, snapshot);
     }
     private EffectiveBalanceSnapshot snapshot(TradingAccount account,Instant start,boolean available,String error,
             List<PendingTradingAdjustmentRepository.Adjustment> facts,Map<Asset,BigDecimal> official,
@@ -168,5 +203,9 @@ public class EffectiveBalanceService {
     }
     private static TradingException unavailable() {
         return new TradingException(HttpStatus.SERVICE_UNAVAILABLE,"OFFICIAL_BALANCE_UNAVAILABLE","Compte officiel AS400 indisponible ou incohérent");
+    }
+    private DemoBalanceRepository demoProjection() {
+        if (demoProjection == null) throw new IllegalStateException("DEMO_BALANCE_PROJECTION_UNAVAILABLE");
+        return demoProjection;
     }
 }

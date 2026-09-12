@@ -43,6 +43,6 @@ public class StatementController {
                                       @RequestParam(required = false) Long cursor,
                                       @RequestParam(required = false) Integer limit) {
         var trader=traders.current(authentication);
-        return statements.build(accounts.requireByCompany(trader.companyId()), cursor, limit);
+        return statements.build(accounts.requireByCompany(trader.companyId(), trader.tradingMode()), cursor, limit, trader.tradingMode());
     }
 }

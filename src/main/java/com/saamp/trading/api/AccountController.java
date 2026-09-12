@@ -52,7 +52,7 @@ public class AccountController {
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public AccountView account(Authentication authentication) {
         var trader = traders.current(authentication);
-        return AccountView.from(accounts.requireByCompany(trader.companyId()));
+        return AccountView.from(accounts.requireByCompany(trader.companyId(), trader.tradingMode()));
     }
 
     /**
@@ -66,10 +66,10 @@ public class AccountController {
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public List<BalanceView> balances(Authentication authentication) {
         var trader = traders.current(authentication);
-        var account = accounts.requireByCompany(trader.companyId());
-        return balances.findAll(account.id()).stream()
+        var account = accounts.requireByCompany(trader.companyId(), trader.tradingMode());
+        return balances.findAll(account.id(),trader.tradingMode()).stream()
                 .filter(balance -> balance.asset() == account.baseCurrency() || balance.asset().isMetal())
-                .map(balance -> BalanceView.from(balance, reservations.available(account.id(), balance.asset(), balance.quantity())))
+                .map(balance -> BalanceView.from(balance, reservations.available(account.id(), balance.asset(), balance.quantity(),trader.tradingMode())))
                 .toList();
     }
 
@@ -84,8 +84,8 @@ public class AccountController {
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public List<PositionView> positions(Authentication authentication) {
         var trader = traders.current(authentication);
-        var account = accounts.requireByCompany(trader.companyId());
-        return positions.read(account).stream().map(PositionView::from).toList();
+        var account = accounts.requireByCompany(trader.companyId(), trader.tradingMode());
+        return positions.read(account,trader.tradingMode()).stream().map(PositionView::from).toList();
     }
 
     /**
@@ -99,8 +99,8 @@ public class AccountController {
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public AccountSummaryView summary(Authentication authentication) {
         var trader = traders.current(authentication);
-        var account = accounts.requireByCompany(trader.companyId());
+        var account = accounts.requireByCompany(trader.companyId(), trader.tradingMode());
         return new AccountSummaryView(account.id(), account.baseCurrency(), account.status(), account.dealLimit(),
-                account.positionLimit(), RiskSummaryView.from(risk.computeAndStore(account)));
+                account.positionLimit(), RiskSummaryView.from(risk.computeAndStore(account,trader.tradingMode())));
     }
 }

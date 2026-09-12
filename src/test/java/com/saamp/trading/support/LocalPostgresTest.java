@@ -28,7 +28,7 @@ class LocalPostgresTest {
         try(var context=new AnnotationConfigApplicationContext(LocalPostgres.Context.class)) {
             var spring=new JdbcTemplate(context.getBean(DataSource.class));
             assertThat(spring.queryForObject("SELECT current_schema()",String.class)).isEqualTo(LocalPostgres.schema()).startsWith("saamp_test_").isNotEqualTo("public");
-            assertThat(spring.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(14);
+            assertThat(spring.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(15);
             assertThat(spring.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=? AND table_name='databasechangelog'",Integer.class,LocalPostgres.schema())).isEqualTo(1);
             try(var c=LocalPostgres.connection();var s=c.createStatement();var r=s.executeQuery("SELECT current_schema()")) {
                 r.next();assertThat(r.getString(1)).isEqualTo(LocalPostgres.schema());

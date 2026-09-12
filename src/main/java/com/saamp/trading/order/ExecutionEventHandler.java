@@ -5,6 +5,7 @@ import com.saamp.trading.account.AccountRepository;
 import com.saamp.trading.domain.OrderStatus;
 import com.saamp.trading.domain.OrderSide;
 import com.saamp.trading.ledger.LedgerService;
+import com.saamp.trading.ledger.DemoLedgerService;
 import com.saamp.trading.pricing.AssetConfig;
 import com.saamp.trading.pricing.ClientQuote;
 import com.saamp.trading.pricing.PriceMath;
@@ -24,6 +25,7 @@ import java.math.RoundingMode;
 public class ExecutionEventHandler {
     private final PricingRepository pricing;
     private final LedgerService ledger;
+    private final DemoLedgerService demoLedger;
     private final OrderRepository orders;
     private final ReservationService reservations;
     private final AccountRepository accounts;
@@ -37,8 +39,15 @@ public class ExecutionEventHandler {
      */
     public ExecutionEventHandler(PricingRepository pricing, LedgerService ledger, OrderRepository orders,
                                  ReservationService reservations, AccountRepository accounts) {
+        this(pricing, ledger, null, orders, reservations, accounts);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ExecutionEventHandler(PricingRepository pricing, LedgerService ledger, DemoLedgerService demoLedger, OrderRepository orders,
+                                 ReservationService reservations, AccountRepository accounts) {
         this.pricing = pricing;
         this.ledger = ledger;
+        this.demoLedger = demoLedger;
         this.orders = orders;
         this.reservations = reservations;
         this.accounts = accounts;
@@ -72,7 +81,12 @@ public class ExecutionEventHandler {
         BigDecimal metalDelta = order.side() == OrderSide.BUY ? order.quantityOz() : order.quantityOz().negate();
         BigDecimal cashDelta = order.side() == OrderSide.BUY ? gross.negate() : gross;
 
-        ledger.postTrade(account.id(), order.asset(), metalDelta, account.baseCurrency(), cashDelta, order.id(), actor);
+        if (order.tradingMode() == com.saamp.trading.domain.TradingMode.DEMO) {
+            if (demoLedger == null) throw new IllegalStateException("DEMO_LEDGER_UNAVAILABLE");
+            demoLedger.postTrade(account.id(), order.asset(), metalDelta, account.baseCurrency(), cashDelta, order.id(), actor);
+        } else {
+            ledger.postTrade(account.id(), order.asset(), metalDelta, account.baseCurrency(), cashDelta, order.id(), actor);
+        }
         orders.markFilled(order.id(), executionId, marketRate, clientPriceRaw, clientPrice, spread, quoteAtSubmission.spreadConfigVersion(), revenue, gross);
         reservations.consumeForOrder(order.id());
     }

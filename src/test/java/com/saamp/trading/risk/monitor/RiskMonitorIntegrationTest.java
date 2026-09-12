@@ -54,6 +54,8 @@ class RiskMonitorIntegrationTest {
         migrate(12);
         historical=jdbc.queryForList("SELECT * FROM databasechangelog ORDER BY orderexecuted");
         migrate(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(13);
+        migrate(2);
         context=new AnnotationConfigApplicationContext();
         context.registerBean(DataSource.class,()->ds);
         context.registerBean(JdbcTemplate.class,()->jdbc);
@@ -109,7 +111,7 @@ class RiskMonitorIntegrationTest {
 
     @Test void installAndUpgradePreserveHistoryAndProtectAudit() {
         assertThat(jdbc.queryForList("SELECT * FROM databasechangelog WHERE orderexecuted<=12 ORDER BY orderexecuted")).isEqualTo(historical);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(13);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(15);
         warningAccount();assertThat(service.observe(id)).isTrue();
         assertThatThrownBy(()->jdbc.update("UPDATE trading_risk_monitor_event SET reason='tampered' WHERE account_id=?",id)).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThatThrownBy(()->jdbc.update("DELETE FROM trading_risk_monitor_event WHERE account_id=?",id)).isInstanceOf(org.springframework.dao.DataAccessException.class);
@@ -121,6 +123,15 @@ class RiskMonitorIntegrationTest {
         assertThat(service.observe(id)).isTrue();assertThat(level()).isEqualTo("NO_POSITION");assertThat(notifications()).isZero();
         verifyNoInteractions(provider);
     }
+
+    @Test void demoAccountsNeverEnterLiveMonitorCandidates() {
+        long demo=jdbc.queryForObject("INSERT INTO trading_account(company_id,base_currency,status,account_mode) VALUES (2,'EUR','ACTIVE','DEMO') RETURNING id",Long.class);
+        assertThat(repository.allCandidates(0,100)).contains(id).doesNotContain(demo);
+        assertThat(repository.candidates(0,100)).doesNotContain(demo);
+        service.scan();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM trading_risk_monitor_state WHERE account_id=?",Integer.class,demo)).isZero();
+        verifyNoInteractions(provider);
+    }
     @Test void enforcedMonitorDiscoversOfficialOnlyPositionAndAuditsUnavailableBalance() {
         jdbc.update("UPDATE trading_account SET as400_ste='B',as400_nucli_trading=20662 WHERE id=?",id);
         var official=mock(OfficialTradingBalanceReader.class);
@@ -130,7 +141,9 @@ class RiskMonitorIntegrationTest {
         when(official.read(any(),anyList())).thenReturn(new OfficialTradingBalanceReader.Reading(amount,Map.of()));
         var mode=new EffectiveBalanceProperties();mode.setMode(EffectiveBalanceProperties.Mode.ENFORCED);mode.setMaxSnapshotAge(java.time.Duration.ofMinutes(2));
         mode.setOverlayCutoverAt(java.time.Instant.parse("2020-01-01T00:00:00Z"));
-        var effective=new EffectiveBalanceService(balances,accounts,new PendingTradingAdjustmentRepository(jdbc,mode),official,mode);
+        var pending=mock(PendingTradingAdjustmentRepository.class);
+        when(pending.read(id)).thenReturn(List.of());
+        var effective=new EffectiveBalanceService(balances,accounts,pending,official,mode);
         var monitor=new RiskMonitorService(repository,accounts,effective,context.getBean(PricingService.class),context.getBean(MarginRateRepository.class),context.getBean(RiskService.class),config,Clock.systemUTC());
         assertThat(balances.findAll(id)).isEmpty();
         monitor.scan();

@@ -27,7 +27,7 @@ public class PricingController {
     @Operation(summary = "Lire les prix client", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ACCOUNT_READ. Les prix fournisseur bruts ne sont jamais exposés.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
     public List<ClientPriceView> prices(Authentication authentication, @RequestParam(required=false) List<Asset> assets) {
-        var trader=traders.current(authentication); var account=accounts.requireByCompany(trader.companyId());
+        var trader=traders.current(authentication); var account=accounts.requireByCompany(trader.companyId(), trader.tradingMode());
         var requested=(assets==null||assets.isEmpty())?Asset.metals().stream().toList():assets;
         return requested.stream().filter(Asset::isMetal).map(a -> {
             ClientQuote q = pricing.quoteForDisplay(trader.companyId(),a,account.baseCurrency());

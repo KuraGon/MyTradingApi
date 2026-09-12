@@ -2,6 +2,7 @@ package com.saamp.trading.account;
 
 import com.saamp.trading.pricing.PricingService;
 import com.saamp.trading.risk.MarginRateRepository;
+import com.saamp.trading.domain.TradingMode;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -36,6 +37,11 @@ public class PositionService {
      */
     public List<AccountPosition> read(TradingAccount account) {
         return value(account, balances.findAll(account.id()));
+    }
+
+    /** DEMO values only its local projection; LIVE keeps EffectiveBalance semantics. */
+    public List<AccountPosition> read(TradingAccount account, TradingMode tradingMode) {
+        return value(account, balances.findAll(account.id(), tradingMode));
     }
 
     /**

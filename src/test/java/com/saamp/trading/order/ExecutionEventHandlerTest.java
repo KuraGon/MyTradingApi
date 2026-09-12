@@ -4,6 +4,7 @@ import com.saamp.trading.account.TradingAccount;
 import com.saamp.trading.common.ClientOrderIdFactory;
 import com.saamp.trading.domain.*;
 import com.saamp.trading.ledger.LedgerService;
+import com.saamp.trading.ledger.DemoLedgerService;
 import com.saamp.trading.pricing.AssetConfig;
 import com.saamp.trading.pricing.ClientQuote;
 import com.saamp.trading.pricing.PricingRepository;
@@ -26,6 +27,7 @@ class ExecutionEventHandlerTest {
 
     @Mock PricingRepository pricing;
     @Mock LedgerService ledger;
+    @Mock DemoLedgerService demoLedger;
     @Mock OrderRepository orders;
     @Mock ReservationService reservations;
     @Mock com.saamp.trading.account.AccountRepository accounts;
@@ -34,7 +36,7 @@ class ExecutionEventHandlerTest {
 
     @BeforeEach
     void setUp() {
-        handler = new ExecutionEventHandler(pricing, ledger, orders, reservations, accounts);
+        handler = new ExecutionEventHandler(pricing, ledger, demoLedger, orders, reservations, accounts);
         when(accounts.lockById(5L)).thenReturn(Optional.of(account()));
         when(orders.lockById(10L)).thenReturn(Optional.of(order()));
     }
@@ -80,6 +82,35 @@ class ExecutionEventHandlerTest {
     }
 
     @Test
+    void demoFilledUsesOnlyTheDemoLedgerAndNeverTheLiveSettlementPath() {
+        TradingOrder demoOrder = order(TradingMode.DEMO);
+        when(orders.lockById(10L)).thenReturn(Optional.of(demoOrder));
+        when(pricing.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(
+                new AssetConfig(Asset.XAU, new BigDecimal("0.000001"), 6, new BigDecimal("0.002000"), true)));
+
+        handler.handleFilled(demoOrder, account(), "DEMO-EX", new BigDecimal("100.000000"), quote(), "user:7");
+
+        verify(demoLedger).postTrade(eq(5L), eq(Asset.XAU), eq(BigDecimal.ONE), eq(Asset.EUR),
+                eq(new BigDecimal("-100.10")), eq(10L), eq("user:7"));
+        verifyNoInteractions(ledger);
+        verify(reservations).consumeForOrder(10L);
+    }
+
+    @Test
+    void replayOfAnAlreadyFilledDemoOrderCannotPostAnySettlement() {
+        TradingOrder demoOrder = mock(TradingOrder.class);
+        when(demoOrder.id()).thenReturn(10L);
+        when(demoOrder.accountId()).thenReturn(5L);
+        when(demoOrder.status()).thenReturn(OrderStatus.FILLED);
+        when(orders.lockById(10L)).thenReturn(Optional.of(demoOrder));
+
+        handler.handleFilled(demoOrder, account(), "DEMO-EX", new BigDecimal("100"), quote(), "replay");
+
+        verifyNoInteractions(ledger, demoLedger, reservations, pricing);
+        verify(orders, never()).markFilled(anyLong(), anyString(), any(), any(), any(), any(), anyInt(), any(), any());
+    }
+
+    @Test
     void failedExecutionRejectsOrderAndReleasesReservations() {
         TradingOrder order = order();
 
@@ -91,13 +122,17 @@ class ExecutionEventHandlerTest {
     }
 
     private TradingOrder order() {
+        return order(TradingMode.LIVE);
+    }
+
+    private TradingOrder order(TradingMode tradingMode) {
         String key = "execution-handler";
         return new TradingOrder(10L, 5L, 42L, null, Asset.XAU, "XAUEUR", OrderSide.BUY, OrderType.SPOT,
                 BigDecimal.ONE, QuantityUnit.OZ, BigDecimal.ONE, OrderStatus.PENDING_UNKNOWN,
                 new BigDecimal("100"), new BigDecimal("100.1"), new BigDecimal("100.1"),
                 null, null, null, new BigDecimal("0.001"), 1, null, null,
                 key, ClientOrderIdFactory.fromIdempotencyKey(key), null, null, null, 0,
-                null, null, null, OffsetDateTime.now(), OffsetDateTime.now(), null);
+                null, null, null, OffsetDateTime.now(), OffsetDateTime.now(), null, tradingMode);
     }
 
     private TradingAccount account() {

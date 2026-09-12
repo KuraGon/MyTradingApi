@@ -30,6 +30,8 @@ public class PendingUnknownResolver {
     @Scheduled(fixedDelay = 1000)
     public void resolveDue() {
         for (TradingOrder candidate : orders.findPendingUnknownDue(50)) {
+            // Defense supplementaire : aucune resolution provider d'un ancien ordre DEMO.
+            if (candidate.tradingMode() == com.saamp.trading.domain.TradingMode.DEMO) continue;
             TradingOrder order = candidate;
             try {
                 if (order.status() == com.saamp.trading.domain.OrderStatus.PENDING) {

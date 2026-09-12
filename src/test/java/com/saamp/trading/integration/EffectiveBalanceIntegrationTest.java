@@ -28,7 +28,8 @@ import static org.mockito.ArgumentMatchers.*;
 @org.springframework.context.annotation.Import(com.saamp.trading.support.LocalPostgres.Context.class)
 @SpringBootTest(properties={"trading.provider.mode=SIMULATED","trading.as400.enabled=false","trading.as400.jdbc-url=",
         "trading.effective-balance.overlay-cutover-at=2020-01-01T00:00:00Z",
-        "trading.reconciliation.enabled=false","trading.effective-balance.mode=ENFORCED","trading.effective-balance.max-snapshot-age=2m"})
+        "trading.reconciliation.enabled=false","trading.effective-balance.mode=ENFORCED","trading.effective-balance.max-snapshot-age=2m",
+        "trading.demo.enabled=true"})
 class EffectiveBalanceIntegrationTest {
     @MockitoBean(name="org.springframework.context.annotation.internalScheduledAnnotationProcessor")
     org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor scheduling;
@@ -108,6 +109,32 @@ class EffectiveBalanceIntegrationTest {
         assertThatThrownBy(()->preview(OrderSide.BUY,"1")).isInstanceOf(TradingException.class);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_order WHERE account_id=?",Integer.class,accountId)).isZero();
         verify(provider,never()).submitSpotOrder(any());
+    }
+    @Test void demoFilledNeverCreatesAnAs400OutboxMovementOrEffectiveBalanceOverlay() {
+        unavailable=true;
+        accountId=jdbc.queryForObject("INSERT INTO trading_account(company_id,base_currency,status,account_mode) VALUES (?,'EUR','ACTIVE','DEMO') RETURNING id",Long.class,ids.incrementAndGet());
+        companyId=accounts.findById(accountId).orElseThrow().companyId();
+        jdbc.update("INSERT INTO trading_margin_rate(account_id,asset,rate) VALUES (?,'XAU',0.05)",accountId);
+        when(pricing.quoteForDisplay(companyId,Asset.XAU,Asset.EUR)).thenAnswer(call->freshQuote());
+        when(pricing.quoteForExecution(companyId,Asset.XAU,Asset.EUR)).thenAnswer(call->freshQuote());
+        jdbc.update("INSERT INTO trading_market_price(pair,bid,ask,mid,price_as_of,source) VALUES ('XAUEUR',10,10,10,NOW(),'FIXTURE') ON CONFLICT(pair) DO UPDATE SET bid=10,ask=10,mid=10,price_as_of=NOW()");
+        jdbc.update("INSERT INTO trading_demo_balance(account_id,asset,quantity) VALUES (?,'EUR',100)",accountId);
+        var request=new OrderPreviewRequest(Asset.XAU,OrderSide.BUY,BigDecimal.ONE,QuantityUnit.OZ,"demo-"+UUID.randomUUID());
+
+        var preview=execution.preview(companyId,1,request,TradingMode.DEMO);
+        var filled=execution.submit(preview.orderId(),companyId,1,TradingMode.DEMO);
+
+        assertThat(filled.status()).isEqualTo(OrderStatus.FILLED);
+        assertThat(jdbc.queryForObject("SELECT trading_mode FROM trading_order WHERE id=?",String.class,filled.id())).isEqualTo("DEMO");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_demo_ledger_entry WHERE order_id=?",Integer.class,filled.id())).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_ledger_entry WHERE order_id=?",Integer.class,filled.id())).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_sync_outbox WHERE order_id=?",Integer.class,filled.id())).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_movement m JOIN trading_as400_sync_outbox e ON e.id=m.event_id WHERE e.order_id=?",Integer.class,filled.id())).isZero();
+        assertThat(pending.read(accountId)).isEmpty();
+        fills.handleFilled(filled,account(),filled.stonexExid(),b("10"),quote,"replay");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_demo_ledger_entry WHERE order_id=?",Integer.class,filled.id())).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trading_as400_sync_outbox WHERE order_id=?",Integer.class,filled.id())).isZero();
+        verifyNoInteractions(official);
     }
     @Test void as400FailureAfterIrreversibleProviderFillDoesNotPreventLedger() {
         var p=preview(OrderSide.BUY,"1");

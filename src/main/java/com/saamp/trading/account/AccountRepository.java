@@ -38,6 +38,7 @@ public class AccountRepository {
                 AccountStatus.valueOf(rs.getString("status")), rs.getBigDecimal("deal_limit"),
                 rs.getBigDecimal("position_limit"), rs.getBigDecimal("loss_limit"), rs.getString("as400_ste"),
                 (Integer) rs.getObject("as400_nucli_commercial"), (Integer) rs.getObject("as400_nucli_trading"), rs.getInt("config_version"),
-                rs.getObject("created_at", java.time.OffsetDateTime.class), rs.getObject("updated_at", java.time.OffsetDateTime.class));
+                rs.getObject("created_at", java.time.OffsetDateTime.class), rs.getObject("updated_at", java.time.OffsetDateTime.class),
+                com.saamp.trading.domain.TradingMode.valueOf(rs.getString("account_mode")));
     }
 }

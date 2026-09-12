@@ -4,6 +4,7 @@ import com.saamp.trading.account.AccountPosition;
 import com.saamp.trading.account.EffectiveBalanceService;
 import com.saamp.trading.account.PositionService;
 import com.saamp.trading.account.TradingAccount;
+import com.saamp.trading.domain.TradingMode;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -53,7 +54,16 @@ public class RiskService {
      * @throws com.saamp.trading.common.TradingException si la liquidation ou la marge ne peut être calculée
      */
     public RiskResult computeAndStore(TradingAccount account) {
-        var balanceSnapshot = balances.findAll(account.id());
+        return calculateAndStore(account, balances.findAll(account.id()), TradingMode.LIVE);
+    }
+
+    /** DEMO computes the same Rule B inputs from its local projection without polluting LIVE risk history. */
+    public RiskResult computeAndStore(TradingAccount account, TradingMode tradingMode) {
+        return calculateAndStore(account, balances.findAll(account.id(), tradingMode), tradingMode);
+    }
+
+    private RiskResult calculateAndStore(TradingAccount account,
+            java.util.List<com.saamp.trading.account.Balance> balanceSnapshot, TradingMode tradingMode) {
         BigDecimal totalFunds = balanceSnapshot.stream()
                 .filter(balance -> balance.asset() == account.baseCurrency())
                 .map(balance -> balance.quantity()).reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -61,7 +71,7 @@ public class RiskService {
         Instant oldestPrice = valuedPositions.stream().map(AccountPosition::priceAsOf)
                 .min(Comparator.naturalOrder()).orElseGet(Instant::now);
         RiskResult result = RiskCalculator.calculateAccountPositions(totalFunds, valuedPositions);
-        snapshots.insert(account.id(), oldestPrice.atOffset(ZoneOffset.UTC), result);
+        if (tradingMode == TradingMode.LIVE) snapshots.insert(account.id(), oldestPrice.atOffset(ZoneOffset.UTC), result);
         return result;
     }
 }

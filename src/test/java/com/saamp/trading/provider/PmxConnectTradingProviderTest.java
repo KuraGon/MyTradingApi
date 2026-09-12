@@ -1,4 +1,12 @@
 package com.saamp.trading.provider;
+import com.saamp.trading.domain.OrderSide;
+import com.saamp.trading.domain.TradingMode;
+import com.saamp.trading.common.TradingException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import java.math.BigDecimal;
+import java.util.Map;
 
 import com.saamp.trading.config.TradingProperties;
 import com.saamp.trading.domain.Asset;
@@ -338,6 +346,33 @@ class PmxConnectTradingProviderTest {
         assertThatThrownBy(() -> provider.submitSpotOrder(null))
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessageContaining("UAT");
+    }
+
+    @Test
+    void demoJwtCannotReachTradeEvenIfPmxConnectIsConfigured() {
+        properties.getDemo().setEnabled(true);
+        Jwt jwt = new Jwt("demo", Instant.now(), Instant.now().plusSeconds(60), Map.of("alg", "none"),
+                Map.of("sub", "10", "companyId", 1L, "tradingMode", "DEMO"));
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+        try {
+            assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                    .submitSpotOrder(new SpotOrderRequest("CL-demo", "XAUEUR", OrderSide.BUY, BigDecimal.ONE)))
+                    .isInstanceOfSatisfying(TradingException.class,
+                            error -> assertThat(error.getCode()).isEqualTo("DEMO_REAL_PROVIDER_FORBIDDEN"));
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    void explicitDemoRequestIsRejectedBeforeTradeWithoutAnySecurityContext() {
+        SecurityContextHolder.clearContext();
+
+        assertThatThrownBy(() -> new PmxConnectTradingProvider(properties, gate, providerAccounts)
+                .submitSpotOrder(new SpotOrderRequest("CL-demo-explicit", "XAUEUR", OrderSide.BUY,
+                        BigDecimal.ONE, TradingMode.DEMO)))
+                .isInstanceOfSatisfying(TradingException.class,
+                        error -> assertThat(error.getCode()).isEqualTo("DEMO_REAL_PROVIDER_FORBIDDEN"));
     }
 
     private void spotContexts(String metals, String fx) {

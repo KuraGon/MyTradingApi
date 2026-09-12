@@ -21,14 +21,16 @@ public class OrderController {
     @Operation(summary = "Prévisualiser un ordre SPOT", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ORDER_WRITE. Crée un brouillon et ses réservations avant validation explicite par l'utilisateur.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ORDER_WRITE')")
     public OrderPreviewResponse preview(Authentication authentication, @Valid @RequestBody OrderPreviewRequest request) {
-        var trader=traders.current(authentication); return execution.preview(trader.companyId(),trader.userId(),request);
+        var trader=traders.current(authentication); return execution.preview(trader.companyId(),trader.userId(),request,trader.tradingMode());
     }
 
     @PostMapping("/{orderId}/submit")
     @Operation(summary = "Soumettre un ordre prévisualisé", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ORDER_WRITE. Ne jamais retransmettre automatiquement un ordre PENDING_UNKNOWN.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ORDER_WRITE')")
     public OrderView submit(Authentication authentication,@PathVariable long orderId) {
-        var trader=traders.current(authentication); return OrderView.from(execution.submit(orderId,trader.companyId(),trader.userId()));
+        var trader=traders.current(authentication);
+        var order=execution.submit(orderId,trader.companyId(),trader.userId(),trader.tradingMode());
+        return OrderView.from(order);
     }
 
     @GetMapping
@@ -37,15 +39,15 @@ public class OrderController {
     public OrderPageView history(Authentication authentication,
                                  @RequestParam(required = false) Long cursor,
                                  @RequestParam(required = false) Integer limit) {
-        var trader=traders.current(authentication); var account=accounts.requireByCompany(trader.companyId());
-        return queries.page(account, cursor, limit);
+        var trader=traders.current(authentication); var account=accounts.requireByCompany(trader.companyId(), trader.tradingMode());
+        return queries.page(account, cursor, limit, trader.tradingMode());
     }
 
     @GetMapping("/{orderId}")
     @Operation(summary = "Suivre un ordre", description = "Permissions : MYTRADING_ACCESS + MYTRADING_HISTORY_READ. Route canonique de polling d'un ordre PENDING ou PENDING_UNKNOWN ; ne transmet aucun ordre.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_HISTORY_READ')")
     public OrderView detail(Authentication authentication, @PathVariable long orderId) {
-        var trader=traders.current(authentication); var account=accounts.requireByCompany(trader.companyId());
-        return queries.detail(account, orderId);
+        var trader=traders.current(authentication); var account=accounts.requireByCompany(trader.companyId(), trader.tradingMode());
+        return queries.detail(account, orderId, trader.tradingMode());
     }
 }

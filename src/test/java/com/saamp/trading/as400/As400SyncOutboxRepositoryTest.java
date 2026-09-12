@@ -67,7 +67,7 @@ class As400SyncOutboxRepositoryTest {
         assertThat(sql.getValue()).contains("target='SICOUVI'",
                 "status IN ('PENDING','RETRY','PROCESSING')",
                 "sync_state IN ('PENDING','SUBMITTED','ACCEPTED')",
-                "FOR UPDATE SKIP LOCKED");
+                "FOR UPDATE OF e SKIP LOCKED");
         String mutations=sql.getValue().substring(sql.getValue().indexOf("SET status="),
                 sql.getValue().indexOf("FROM due"));
         assertThat(mutations).contains("status='PROCESSING'","claim_token=?").doesNotContain("sync_state");

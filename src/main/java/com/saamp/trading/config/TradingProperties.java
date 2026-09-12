@@ -16,12 +16,14 @@ public class TradingProperties {
     private final Reservations reservations = new Reservations();
     private final Provider provider = new Provider();
     private final Reconciliation reconciliation = new Reconciliation();
+    private final Demo demo = new Demo();
 
     public Security getSecurity() { return security; }
     public Pricing getPricing() { return pricing; }
     public Reservations getReservations() { return reservations; }
     public Provider getProvider() { return provider; }
     public Reconciliation getReconciliation() { return reconciliation; }
+    public Demo getDemo() { return demo; }
 
     public static class Security {
         private String issuer;
@@ -64,6 +66,13 @@ public class TradingProperties {
         public Duration getInterval() { return interval; }
         public void setInterval(Duration interval) { this.interval = interval; }
     }
+
+    public static class Demo {
+        private boolean enabled = false;
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+    }
+
 
     public static class Provider {
         private String mode = "SIMULATED";
