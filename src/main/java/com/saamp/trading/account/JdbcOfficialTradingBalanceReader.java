@@ -14,12 +14,18 @@ import org.springframework.stereotype.Component;
 @Component
 public class JdbcOfficialTradingBalanceReader implements OfficialTradingBalanceReader {
     private final ObjectProvider<JdbcTemplate> source;
-    /** @param source datasource IBM i explicite ; son absence ne signifie jamais zéro */
-    public JdbcOfficialTradingBalanceReader(@Qualifier("as400JdbcTemplate") ObjectProvider<JdbcTemplate> source) { this.source=source; }
+    private final ObjectProvider<JdbcTemplate> shadowSource;
+    /** @param source datasource IBM i explicite ; son absence ne signifie jamais zéro
+     * @param shadowSource connexion bornee exclusivement presente en mode SHADOW */
+    public JdbcOfficialTradingBalanceReader(@Qualifier("as400JdbcTemplate") ObjectProvider<JdbcTemplate> source,
+            @Qualifier("shadowBalanceJdbcTemplate") ObjectProvider<JdbcTemplate> shadowSource) {
+        this.source=source; this.shadowSource=shadowSource;
+    }
     /** @param account compte trading @param adjustments faits CLIENT
      * @return lecture complète @throws IllegalStateException si identité, devise ou données invalides */
     @Override public Reading read(TradingAccount account, List<PendingTradingAdjustmentRepository.Adjustment> adjustments) {
-        var jdbc=source.getIfAvailable();
+        var jdbc=shadowSource.getIfAvailable();
+        if(jdbc==null) jdbc=source.getIfAvailable();
         if(jdbc==null) throw new IllegalStateException("AS400_NOT_CONFIGURED");
         try(Connection connection=Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
             connection.setReadOnly(true);

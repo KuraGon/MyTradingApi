@@ -8,6 +8,10 @@ import java.util.*;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /** Source unique des comptes opérationnels ; la projection locale reste réservée au settlement. */
 @Service
@@ -17,11 +21,22 @@ public class EffectiveBalanceService {
     private final PendingTradingAdjustmentRepository adjustments;
     private final OfficialTradingBalanceReader official;
     private final EffectiveBalanceProperties config;
-    /** @param projection historique interne @param accounts identité trading @param adjustments faits persistés
-     * @param official lecture officielle @param config mode et fraîcheur technique */
+    private final ShadowBalanceDiagnostics shadow = new ShadowBalanceDiagnostics();
+    private final EffectiveBalanceTelemetry telemetry;
+    /** @param projection projection locale @param accounts comptes @param adjustments overlay
+     * @param official lecteur officiel @param config configuration */
     public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
             PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official, EffectiveBalanceProperties config) {
+        this(projection, accounts, adjustments, official, config, new SimpleMeterRegistry());
+    }
+    /** @param projection projection locale @param accounts comptes @param adjustments overlay
+     * @param official lecteur officiel @param config configuration @param metrics mesures sans soldes */
+    @Autowired
+    public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
+            PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official,
+            EffectiveBalanceProperties config, MeterRegistry metrics) {
         this.projection=projection;this.accounts=accounts;this.adjustments=adjustments;this.official=official;this.config=config;
+        this.telemetry = new EffectiveBalanceTelemetry(metrics);
     }
     /** @return mode imposant la source officielle pour toute décision */
     public boolean enforced() { return config.getMode()==EffectiveBalanceProperties.Mode.ENFORCED; }
@@ -30,20 +45,52 @@ public class EffectiveBalanceService {
     /** @param accountId compte @return soldes selon le mode, sans fallback en ENFORCED */
     public List<Balance> findAll(long accountId) {
         if(!usesOfficial()) return projection.findAll(accountId);
-        return forOperation(capture(accounts.findById(accountId).orElseThrow(EffectiveBalanceService::unavailable)));
+        var account=accounts.findById(accountId).orElseThrow(EffectiveBalanceService::unavailable);
+        return forOperation(captureForOperation(account));
     }
     /** @param account compte @return instantané borné acquis sans verrou PostgreSQL
      * @throws TradingException si ENFORCED et lecture non fiable
      * @throws IllegalStateException si le cutover requis est absent */
     public EffectiveBalanceSnapshot capture(TradingAccount account) {
+        return captureDiagnostic(account);
+    }
+
+    /**
+     * Acquiert la décision immédiatement opposable. En SHADOW, la projection
+     * PostgreSQL est retournée sans attendre DB2, tandis que le diagnostic
+     * complet est lancé hors du chemin utilisateur. Les autres modes gardent
+     * l'acquisition synchrone imposée par leur contrat.
+     */
+    public EffectiveBalanceSnapshot captureForOperation(TradingAccount account) {
+        config.validateConfiguration();
+        if (config.getMode() != EffectiveBalanceProperties.Mode.SHADOW) return captureDiagnostic(account);
+        Instant start = Instant.now();
+        var legacy = projection.findAll(account.id());
+        // Aucune attente reseau, aucune reutilisation d'un resultat diagnostique pour une decision.
+        String reason = shadow.submit(() -> captureDiagnostic(account).available());
+        if (!"DIAGNOSTIC_PENDING".equals(reason)) telemetry.skipped(reason);
+        return snapshot(account,start,false,reason,List.of(),Map.of(),Map.of(),Map.of(),List.of(),legacy,false);
+    }
+
+    // Seul le diagnostic SHADOW en arriere-plan appelle cette collecte synchrone ;
+    // ENFORCED la garde obligatoirement dans le fil de l'operation.
+    EffectiveBalanceSnapshot captureDiagnostic(TradingAccount account) {
         config.validateConfiguration();
         Instant start=Instant.now();
         if(!usesOfficial()) return snapshot(account,start,true,null,List.of(),Map.of(),Map.of(),Map.of(),List.of(),projection.findAll(account.id()),false);
         boolean enforced=config.getMode()==EffectiveBalanceProperties.Mode.ENFORCED;
+        long captureStart=System.nanoTime(), officialNanos=0;
+        int factCount=0;
+        boolean available=false;
+        String reason="TRANSACTION_ACTIVE";
         try {
             if(TransactionSynchronizationManager.isActualTransactionActive()) throw unavailable();
+            reason="CURRENCY_UNSUPPORTED";
             if(account.baseCurrency()!=Asset.EUR) throw new TradingException(HttpStatus.SERVICE_UNAVAILABLE,"OFFICIAL_CURRENCY_UNSUPPORTED","Devise officielle non validée");
+            reason="OVERLAY_READ_FAILED";
             var facts=adjustments.read(account.id());
+            factCount=facts.size();
+            reason="INVALID_OVERLAY";
             var seen=new HashSet<Long>();
             for(var fact:facts) {
                 if((fact.ste()!=null && !fact.ste().equals(account.as400Ste()))
@@ -53,8 +100,14 @@ public class EffectiveBalanceService {
                     throw unavailable();
             }
             // Double collecte : une imputation ou variation observée pendant l'acquisition invalide l'ensemble.
-            var first=official.read(account,facts);
-            var second=official.read(account,facts);
+            reason="OFFICIAL_READ_FAILED";
+            OfficialTradingBalanceReader.Reading first,second;
+            long officialStart=System.nanoTime();
+            try {
+                first=official.read(account,facts);
+                second=official.read(account,facts);
+            } finally { officialNanos=System.nanoTime()-officialStart; }
+            reason="INCONSISTENT_OR_EXPIRED_SNAPSHOT";
             if(!first.equals(second) || !facts.equals(adjustments.read(account.id()))
                     || !Instant.now().isBefore(start.plus(config.getMaxSnapshotAge()))) throw unavailable();
             var pending=new EnumMap<Asset,BigDecimal>(Asset.class);
@@ -73,18 +126,24 @@ public class EffectiveBalanceService {
                 if(value==null) throw unavailable();
                 result.add(new Balance(account.id(),asset,value.add(pending.getOrDefault(asset,BigDecimal.ZERO)),OffsetDateTime.now(ZoneOffset.UTC)));
             }
-            if(!enforced) org.slf4j.LoggerFactory.getLogger(getClass()).info("Effective balance SHADOW accountId={} available=true",account.id());
-            return snapshot(account,start,true,null,facts,second.balances(),pending,second.clientPosted(),result,
+            var completed=snapshot(account,start,true,null,facts,second.balances(),pending,second.clientPosted(),result,
                     enforced?result:projection.findAll(account.id()),enforced);
+            available=true;
+            reason="OK";
+            return completed;
         } catch(RuntimeException failure) {
             if(enforced) {
                 if(failure instanceof TradingException trading) throw trading;
                 throw unavailable();
             }
-            org.slf4j.LoggerFactory.getLogger(getClass()).warn("Effective balance SHADOW accountId={} available=false",account.id());
             return snapshot(account,start,false,"OFFICIAL_BALANCE_UNAVAILABLE",List.of(),Map.of(),Map.of(),Map.of(),List.of(),projection.findAll(account.id()),false);
+        } finally {
+            telemetry.record(account.id(),config.getMode(),available,System.nanoTime()-captureStart,officialNanos,factCount,reason);
         }
     }
+
+    /** Libere uniquement la tache diagnostique SHADOW a l'arret du contexte. */
+    @PreDestroy public void close() { shadow.close(); }
     /** @param snapshot lecture effectuée @return données opposables au mode courant, SHADOW restant local */
     public List<Balance> forOperation(EffectiveBalanceSnapshot snapshot) {
         return snapshot.decisionBalances();

@@ -73,7 +73,7 @@ public final class RiskMonitorService {
         String fingerprint=repository.fingerprint(id);
         var account=accounts.findById(id).orElseThrow();
         EffectiveBalanceSnapshot acquired;
-        try { acquired=balances.capture(account); }
+        try { acquired=balances.captureForOperation(account); }
         catch(TradingException failure) {
             return new Observation(id,version,fingerprint,clock.instant(),null,null,null,null,failure.getCode());
         }

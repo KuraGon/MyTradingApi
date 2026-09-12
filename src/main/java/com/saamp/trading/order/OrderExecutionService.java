@@ -74,7 +74,7 @@ public class OrderExecutionService {
     public OrderPreviewResponse preview(long companyId,long userId,OrderPreviewRequest request) {
         TradingAccount account=accountForCompany(companyId);
         ensureTradingAllowed(account);
-        var balanceSnapshot=balances.capture(account);
+        var balanceSnapshot=balances.captureForOperation(account);
         var existing=orders.findByIdempotencyKey(request.idempotencyKey());
         if (existing.isPresent()) { ensureOwnership(existing.get(),companyId); return replay(existing.get()); }
         BigDecimal qty=TroyWeightConverter.toTroyOunces(request.quantity(),request.unit());
@@ -126,7 +126,7 @@ public class OrderExecutionService {
         if (!provider.supportsSpotOrderSubmission()) throw failure("PROVIDER_EXECUTION_NOT_READY","Transmission SPOT désactivée",HttpStatus.SERVICE_UNAVAILABLE);
         if (transmitted(initial)) return initial;
         if (initial.status()!=OrderStatus.DRAFT) throw failure("ORDER_NOT_SUBMITTABLE","Ordre non transmissible",HttpStatus.CONFLICT);
-        var balanceSnapshot=balances.capture(account);
+        var balanceSnapshot=balances.captureForOperation(account);
         var quotes=quotes(account,initial.asset(),true,balances.forOperation(balanceSnapshot));
         var admitted=transactions.execute(status->{
             var lockedAccount=accounts.lockById(account.id()).orElseThrow();
