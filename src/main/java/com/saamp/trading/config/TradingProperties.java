@@ -17,6 +17,7 @@ public class TradingProperties {
     private final Provider provider = new Provider();
     private final Reconciliation reconciliation = new Reconciliation();
     private final Demo demo = new Demo();
+    private final ExecutionGate executionGate = new ExecutionGate();
 
     public Security getSecurity() { return security; }
     public Pricing getPricing() { return pricing; }
@@ -24,6 +25,7 @@ public class TradingProperties {
     public Provider getProvider() { return provider; }
     public Reconciliation getReconciliation() { return reconciliation; }
     public Demo getDemo() { return demo; }
+    public ExecutionGate getExecutionGate() { return executionGate; }
 
     public static class Security {
         private String issuer;
@@ -73,6 +75,12 @@ public class TradingProperties {
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
     }
 
+    /** Explicit opt-in used to close the persisted gate before a production web server is exposed. */
+    public static class ExecutionGate {
+        private boolean closeOnStartup = false;
+        public boolean isCloseOnStartup() { return closeOnStartup; }
+        public void setCloseOnStartup(boolean closeOnStartup) { this.closeOnStartup = closeOnStartup; }
+    }
 
     public static class Provider {
         private String mode = "SIMULATED";

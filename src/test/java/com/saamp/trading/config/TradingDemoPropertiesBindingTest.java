@@ -16,13 +16,18 @@ class TradingDemoPropertiesBindingTest {
         StandardEnvironment environment = new StandardEnvironment();
         environment.getPropertySources().addFirst(new SystemEnvironmentPropertySource("test-env",
                 Map.of(
-                        "TRADING_DEMO_ENABLED", "true")));
+                        "TRADING_DEMO_ENABLED", "true",
+                        "TRADING_EXECUTION_GATE_CLOSE_ON_STARTUP", "true")));
 
         TradingProperties.Demo demo = Binder.get(environment)
                 .bind("trading.demo", TradingProperties.Demo.class)
                 .orElseThrow(() -> new IllegalStateException("Configuration demo absente"));
+        TradingProperties.ExecutionGate executionGate = Binder.get(environment)
+                .bind("trading.execution-gate", TradingProperties.ExecutionGate.class)
+                .orElseThrow(() -> new IllegalStateException("Configuration execution gate absente"));
 
         assertThat(demo.isEnabled()).isTrue();
+        assertThat(executionGate.isCloseOnStartup()).isTrue();
     }
 
     @Test

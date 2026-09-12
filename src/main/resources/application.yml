@@ -59,6 +59,8 @@ trading:
     interval: ${TRADING_RECONCILIATION_INTERVAL:15m}
   demo:
     enabled: ${TRADING_DEMO_ENABLED:false}
+  execution-gate:
+    close-on-startup: ${TRADING_EXECUTION_GATE_CLOSE_ON_STARTUP:false}
   provider:
     mode: ${TRADING_PROVIDER_MODE:SIMULATED}
     pmx:

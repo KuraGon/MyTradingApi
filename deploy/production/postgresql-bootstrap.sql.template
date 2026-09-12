@@ -1,0 +1,25 @@
+-- Run with psql as a PostgreSQL administrator on the production host only after review.
+-- Example invocation (do not put the password in shell history):
+-- psql -v trading_db_password='[À COMPLÉTER]' -f postgresql-bootstrap.sql.template
+-- This creates a dedicated empty database. It never copies UAT tables, orders, prices or fixtures.
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trading') THEN
+    CREATE ROLE trading LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+  END IF;
+END $$;
+
+ALTER ROLE trading LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD :'trading_db_password';
+
+SELECT format('CREATE DATABASE %I OWNER %I ENCODING %L TEMPLATE template0', 'trading', 'trading', 'UTF8')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'trading')
+\gexec
+
+REVOKE ALL ON DATABASE trading FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE trading TO trading;
+\connect trading
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE, CREATE ON SCHEMA public TO trading;
+ALTER DEFAULT PRIVILEGES FOR ROLE trading IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO trading;
+ALTER DEFAULT PRIVILEGES FOR ROLE trading IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO trading;

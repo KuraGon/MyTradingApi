@@ -1,0 +1,25 @@
+[Unit]
+Description=MyTrading API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=trading
+Group=trading
+WorkingDirectory=/opt/trading-api
+EnvironmentFile=/etc/trading-api/trading-prod.env
+ExecStart=/usr/bin/java -jar /opt/trading-api/trading-api.war
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/trading-api
+
+[Install]
+WantedBy=multi-user.target
