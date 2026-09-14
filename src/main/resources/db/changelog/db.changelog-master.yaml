@@ -31,3 +31,5 @@ databaseChangeLog:
       file: db/changelog/015-demo-order-isolation.sql
   - include:
       file: db/changelog/016-absolute-spread-support.sql
+  - include:
+      file: db/changelog/017-lfmp-spread-default.sql
