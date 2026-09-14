@@ -26,4 +26,10 @@ class OfficialCashValuationServiceTest {
     assertThat(OfficialCashValuationService.value(balances,Asset.EUR,fx)).isEqualTo(balances);
     verifyNoInteractions(fx);
   }
+  @Test void preservesNegativeCashSignAndRoundsOnlyFinalUsdToCents() {
+    TradingProvider provider=mock(TradingProvider.class);
+    when(provider.fetchSpotRates(Set.of("EURUSD"))).thenReturn(java.util.List.of(new MarketQuote("EURUSD",new BigDecimal("1.16"),new BigDecimal("1.18"),new BigDecimal("1.170000"),OffsetDateTime.now())));
+    var valued=OfficialCashValuationService.value(Map.of(Asset.EUR,new BigDecimal("-100.00")),Asset.USD,new As400FxSource(provider,"MID"));
+    assertThat(valued.get(Asset.USD)).isEqualByComparingTo("-117.00");
+  }
 }

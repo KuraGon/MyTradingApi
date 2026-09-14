@@ -51,7 +51,6 @@ public class JdbcOfficialTradingBalanceReader implements OfficialTradingBalanceR
     }
 
     static Reading query(JdbcTemplate jdbc,TradingAccount account,List<PendingTradingAdjustmentRepository.Adjustment> adjustments) {
-        if(account.baseCurrency()!=Asset.EUR) throw new IllegalStateException("OFFICIAL_CURRENCY_UNSUPPORTED");
         if(!"B".equals(account.as400Ste()) || account.as400NucliTrading()==null || account.as400NucliTrading()<=0)
             throw new IllegalStateException("OFFICIAL_TRADING_IDENTITY_UNSUPPORTED");
         // L'habilitation appartient à MyPortal ; NREPCO n'autorise ni n'interdit la lecture.

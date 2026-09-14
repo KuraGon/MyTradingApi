@@ -132,7 +132,7 @@ public class EffectiveBalanceService {
         try {
             if(TransactionSynchronizationManager.isActualTransactionActive()) throw unavailable();
             reason="CURRENCY_UNSUPPORTED";
-            if(account.baseCurrency()!=Asset.EUR) throw new TradingException(HttpStatus.SERVICE_UNAVAILABLE,"OFFICIAL_CURRENCY_UNSUPPORTED","Devise officielle non validée");
+            if(account.baseCurrency()!=Asset.EUR && account.baseCurrency()!=Asset.USD) throw new TradingException(HttpStatus.SERVICE_UNAVAILABLE,"OFFICIAL_CURRENCY_UNSUPPORTED","Devise officielle non validée");
             reason="OVERLAY_READ_FAILED";
             var facts=adjustments.read(account.id());
             factCount=facts.size();
@@ -141,7 +141,7 @@ public class EffectiveBalanceService {
             for(var fact:facts) {
                 if((fact.ste()!=null && !fact.ste().equals(account.as400Ste()))
                         || (fact.nucli()!=null && !fact.nucli().equals(account.as400NucliTrading()))
-                        || !seen.add(fact.orderId()) || fact.currency()!=Asset.EUR || !fact.metal().isMetal()
+                        || !seen.add(fact.orderId()) || fact.currency()!=account.baseCurrency() || !fact.metal().isMetal()
                         || fact.quantityOz()==null || fact.quantityOz().signum()<=0 || fact.grossAmount()==null || fact.grossAmount().signum()<=0)
                     throw unavailable();
             }
@@ -213,7 +213,7 @@ public class EffectiveBalanceService {
         // En LEGACY/SHADOW, la decision locale est toujours relue sous verrou ACCOUNT.
         if(!snapshot.enforced()) return projection.findAll(account.id());
         if(snapshot.accountId()!=account.id() || !Objects.equals(snapshot.ste(),account.as400Ste())
-                || !Objects.equals(snapshot.nucliTrading(),account.as400NucliTrading()) || account.baseCurrency()!=Asset.EUR
+                || !Objects.equals(snapshot.nucliTrading(),account.as400NucliTrading()) || (account.baseCurrency()!=Asset.EUR && account.baseCurrency()!=Asset.USD)
                 || !snapshot.available() || !Instant.now().isBefore(snapshot.startedAt().plus(config.getMaxSnapshotAge()))
                 || !snapshot.facts().equals(adjustments.read(account.id()))) {
             Instant failedAt=Instant.now(); availability.record(account,failedAt,failedAt,false);
