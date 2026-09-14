@@ -46,8 +46,6 @@ class ExecutionEventHandlerTest {
         TradingOrder order = order();
         TradingAccount account = account();
         ClientQuote quote = quote();
-        when(pricing.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(
-                new AssetConfig(Asset.XAU, new BigDecimal("0.000001"), 6, new BigDecimal("0.002000"), true)));
 
         handler.handleFilled(order, account, "EX-100", new BigDecimal("100.000000"), quote, "system:test");
 
@@ -61,15 +59,14 @@ class ExecutionEventHandlerTest {
 
     @Test
     void cashLedgerUsesPublishedGrossAmountRoundedToCurrencyScale() {
-        TradingOrder order = order();
+        TradingOrder order = order(TradingMode.LIVE,"0.003000");
+        when(orders.lockById(10L)).thenReturn(Optional.of(order));
         TradingAccount account = account();
         ClientQuote quote = new ClientQuote(Asset.XAU, "XAUEUR",
                 new BigDecimal("3000.000000"), new BigDecimal("3001.000000"),
                 new BigDecimal("3010.003000"), new BigDecimal("2991.000000"),
                 new BigDecimal("3010.003000"), new BigDecimal("2991.000000"),
                 new BigDecimal("0.003000"), new BigDecimal("0.003000"), 1, OffsetDateTime.now());
-        when(pricing.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(
-                new AssetConfig(Asset.XAU, new BigDecimal("0.000001"), 6, new BigDecimal("0.002000"), true)));
 
         handler.handleFilled(order, account, "EX-ROUND", new BigDecimal("3001.000000"), quote, "system:test");
 
@@ -85,8 +82,6 @@ class ExecutionEventHandlerTest {
     void demoFilledUsesOnlyTheDemoLedgerAndNeverTheLiveSettlementPath() {
         TradingOrder demoOrder = order(TradingMode.DEMO);
         when(orders.lockById(10L)).thenReturn(Optional.of(demoOrder));
-        when(pricing.findAssetConfig(Asset.XAU)).thenReturn(Optional.of(
-                new AssetConfig(Asset.XAU, new BigDecimal("0.000001"), 6, new BigDecimal("0.002000"), true)));
 
         handler.handleFilled(demoOrder, account(), "DEMO-EX", new BigDecimal("100.000000"), quote(), "user:7");
 
@@ -126,11 +121,15 @@ class ExecutionEventHandlerTest {
     }
 
     private TradingOrder order(TradingMode tradingMode) {
+        return order(tradingMode,"0.001000");
+    }
+
+    private TradingOrder order(TradingMode tradingMode,String spread) {
         String key = "execution-handler";
         return new TradingOrder(10L, 5L, 42L, null, Asset.XAU, "XAUEUR", OrderSide.BUY, OrderType.SPOT,
                 BigDecimal.ONE, QuantityUnit.OZ, BigDecimal.ONE, OrderStatus.PENDING_UNKNOWN,
                 new BigDecimal("100"), new BigDecimal("100.1"), new BigDecimal("100.1"),
-                null, null, null, new BigDecimal("0.001"), 1, null, null,
+                null, null, null, new BigDecimal(spread), 1, null, null,
                 key, ClientOrderIdFactory.fromIdempotencyKey(key), null, null, null, 0,
                 null, null, null, OffsetDateTime.now(), OffsetDateTime.now(), null, tradingMode);
     }

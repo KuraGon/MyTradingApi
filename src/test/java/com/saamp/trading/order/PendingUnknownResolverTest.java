@@ -59,13 +59,14 @@ class PendingUnknownResolverTest {
         when(provider.queryRequestStatus(order.clOrdId())).thenReturn(Optional.of(
                 new ExecutionReport(ExecutionState.PROCESSED, order.clOrdId(), "EX-1", new BigDecimal("100.25"), null, null)));
         when(accounts.findById(order.accountId())).thenReturn(Optional.of(account));
-        when(pricing.quoteForExecution(order.companyId(), order.asset(), account.baseCurrency())).thenReturn(quote);
+
 
         resolver.resolveDue();
 
+        verifyNoInteractions(pricing);
         verify(provider, times(1)).queryRequestStatus(order.clOrdId());
         verify(provider, never()).submitSpotOrder(any());
-        verify(events, times(1)).handleFilled(eq(order), eq(account), eq("EX-1"), eq(new BigDecimal("100.25")), eq(quote), eq("system:request-status"));
+        verify(events, times(1)).handleFilled(eq(order), eq(account), eq("EX-1"), eq(new BigDecimal("100.25")), isNull(), eq("system:request-status"));
         verify(orders, never()).scheduleNextResolution(anyLong(), anyInt(), any(), anyBoolean());
     }
 
@@ -78,6 +79,7 @@ class PendingUnknownResolverTest {
 
         resolver.resolveDue();
 
+        verifyNoInteractions(pricing);
         verify(provider, times(1)).queryRequestStatus(order.clOrdId());
         verify(provider, never()).submitSpotOrder(any());
         verify(events, times(1)).handleRejected(order, "PMX_REJECTED", "Rejected");

@@ -54,9 +54,16 @@ public class JdbcOfficialTradingBalanceReader implements OfficialTradingBalanceR
         if(account.baseCurrency()!=Asset.EUR) throw new IllegalStateException("OFFICIAL_CURRENCY_UNSUPPORTED");
         if(!"B".equals(account.as400Ste()) || account.as400NucliTrading()==null || account.as400NucliTrading()<=0)
             throw new IllegalStateException("OFFICIAL_TRADING_IDENTITY_UNSUPPORTED");
-        var identity=jdbc.queryForList("SELECT NREPCO FROM GESCOMF.CLIENOP1 WHERE STE=? AND NUCLI=? AND NULIV=0",
-                Integer.class,account.as400Ste(),account.as400NucliTrading());
-        if(identity.size()!=1 || !Integer.valueOf(400).equals(identity.getFirst())) throw new IllegalStateException("OFFICIAL_TRADING_IDENTITY_INVALID");
+        // L'habilitation appartient à MyPortal ; NREPCO n'autorise ni n'interdit la lecture.
+        // Vérifier exclusivement l'identité explicitement mappée, y compris dans la ligne retournée.
+        var identity=jdbc.query("SELECT STE,NUCLI,NULIV FROM GESCOMF.CLIENOP1 WHERE STE=? AND NUCLI=? AND NULIV=0",
+                (row,n)-> {
+                    String ste=row.getString("STE");
+                    BigDecimal nucli=row.getBigDecimal("NUCLI"),nuliv=row.getBigDecimal("NULIV");
+                    return ste!=null && account.as400Ste().equals(ste.trim()) && nucli!=null && nuliv!=null
+                            && nucli.compareTo(BigDecimal.valueOf(account.as400NucliTrading()))==0 && nuliv.signum()==0;
+                },account.as400Ste(),account.as400NucliTrading());
+        if(identity.size()!=1 || !Boolean.TRUE.equals(identity.getFirst())) throw new IllegalStateException("OFFICIAL_TRADING_IDENTITY_INVALID");
         var result=new EnumMap<Asset,BigDecimal>(Asset.class);
         for(var asset:List.of(Asset.EUR,Asset.XAU,Asset.XAG,Asset.XPT,Asset.XPD)) result.put(asset,BigDecimal.ZERO.setScale(6));
         var seen=EnumSet.noneOf(Asset.class);

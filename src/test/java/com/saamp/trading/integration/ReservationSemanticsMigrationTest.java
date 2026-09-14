@@ -55,10 +55,10 @@ class ReservationSemanticsMigrationTest {
         }
     }
 
-    @Test void completeInstallationUsesTheRealMasterThrough015() throws Exception {
+    @Test void completeInstallationUsesTheRealMasterThrough016() throws Exception {
         try (var fixture=new Schema()) {
             migrate(fixture.source,fixture.name,"db.changelog-master.yaml");
-            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(15);
+            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(16);
             assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=? AND table_name='trading_reservation' AND column_name='reservation_kind' AND is_nullable='NO'",Integer.class,fixture.name)).isEqualTo(1);
         }
     }

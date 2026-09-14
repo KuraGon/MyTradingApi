@@ -42,17 +42,25 @@ public class TradingConfigurationSyncService {
     @Transactional
     public void applySpread(SpreadConfigCommand c) {
         if (!c.asset().isMetal()) throw new IllegalArgumentException("Spread asset must be a metal");
-        if (c.spreadBuy()==null || c.spreadSell()==null || c.spreadBuy().signum()<=0 || c.spreadSell().signum()<=0)
-            throw new TradingException(HttpStatus.BAD_REQUEST,"INVALID_SPREAD","BUY et SELL spread doivent être strictement positifs");
+        var type=c.spreadType()==null?com.saamp.trading.pricing.SpreadType.PERCENTAGE:c.spreadType();
+        String unit=c.priceUnit()==null?"OZ":c.priceUnit();
+        new com.saamp.trading.pricing.SpreadValue(type,c.spreadBuy(),unit);
+        new com.saamp.trading.pricing.SpreadValue(type,c.spreadSell(),unit);
+        if (type==com.saamp.trading.pricing.SpreadType.PERCENTAGE && (c.spreadBuy().signum()==0 || c.spreadSell().signum()==0))
+            throw new TradingException(HttpStatus.BAD_REQUEST,"INVALID_SPREAD","Ratio strictement positif requis");
         OffsetDateTime activeFrom = c.activeFrom()==null ? OffsetDateTime.now() : c.activeFrom();
-        Integer maxVersion = jdbc.query("SELECT MAX(config_version) FROM trading_spread WHERE company_id=? AND asset=?",
-                (rs,n) -> (Integer)rs.getObject(1), c.companyId(),c.asset().name()).stream().findFirst().orElse(null);
+        for (var value:java.util.List.of(c.spreadBuy(),c.spreadSell())) {
+            if (value.setScale(6,java.math.RoundingMode.UNNECESSARY).precision()>20)
+                throw new IllegalArgumentException("SPREAD_PRECISION_EXCEEDED");
+        }
+        Integer maxVersion = jdbc.queryForObject("SELECT MAX(config_version) FROM trading_spread WHERE company_id=? AND asset=?",
+                Integer.class,c.companyId(),c.asset().name());
         if (maxVersion != null && c.configVersion() <= maxVersion) return;
         jdbc.update("UPDATE trading_spread SET active_to=? WHERE company_id=? AND asset=? AND active_to IS NULL AND active_from<?",
                 activeFrom,c.companyId(),c.asset().name(),activeFrom);
         jdbc.update("""
-                INSERT INTO trading_spread(company_id,asset,spread_buy,spread_sell,config_version,active_from)
-                VALUES (?,?,?,?,?,?)
-                """, c.companyId(),c.asset().name(),c.spreadBuy(),c.spreadSell(),c.configVersion(),activeFrom);
+                INSERT INTO trading_spread(company_id,asset,spread_buy,spread_sell,config_version,active_from,spread_type,price_unit)
+                VALUES (?,?,?,?,?,?,?,?)
+                """, c.companyId(),c.asset().name(),c.spreadBuy(),c.spreadSell(),c.configVersion(),activeFrom,type.name(),unit);
     }
 }

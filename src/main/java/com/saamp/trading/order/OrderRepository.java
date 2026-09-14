@@ -28,15 +28,26 @@ public class OrderRepository {
                             java.math.BigDecimal indicativeMarket, java.math.BigDecimal indicativeClientRaw,
                             java.math.BigDecimal indicativeClient, java.math.BigDecimal spread, int spreadVersion,
                             String idempotencyKey, String clOrdId, TradingMode tradingMode) {
+        return insertDraft(accountId,companyId,asset,pair,side,requestedQty,requestedUnit,qtyOz,indicativeMarket,
+                indicativeClientRaw,indicativeClient,spread,spreadVersion,idempotencyKey,clOrdId,tradingMode,
+                com.saamp.trading.pricing.SpreadType.PERCENTAGE,"OZ",6);
+    }
+    /** Persiste la semantique de prix des le preview, sans configuration externe au settlement. */
+    public long insertDraft(long accountId,long companyId,Asset asset,String pair,OrderSide side,
+            java.math.BigDecimal requestedQty,QuantityUnit requestedUnit,java.math.BigDecimal qtyOz,
+            java.math.BigDecimal indicativeMarket,java.math.BigDecimal indicativeClientRaw,
+            java.math.BigDecimal indicativeClient,java.math.BigDecimal spread,int spreadVersion,
+            String idempotencyKey,String clOrdId,TradingMode tradingMode,
+            com.saamp.trading.pricing.SpreadType spreadType,String priceUnit,int quoteScale) {
         var ids = jdbc.query("""
                 INSERT INTO trading_order(account_id,company_id,asset,pair,side,order_type,requested_quantity,requested_unit,
                   quantity_oz,status,indicative_price,indicative_client_price_raw,indicative_client_price,spread_applied,spread_config_version,
-                  idempotency_key,cl_ord_id,trading_mode)
-                VALUES (?,?,?,?,?,'SPOT',?,?,?,'DRAFT',?,?,?,?,?,?,?,?)
+                  idempotency_key,cl_ord_id,trading_mode,spread_type,spread_price_unit,spread_quote_scale)
+                VALUES (?,?,?,?,?,'SPOT',?,?,?,'DRAFT',?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT (idempotency_key) DO NOTHING
                 RETURNING id
                 """, (rs,n) -> rs.getLong(1), accountId,companyId,asset.name(),pair,side.name(),requestedQty,requestedUnit.name(),qtyOz,
-                indicativeMarket,indicativeClientRaw,indicativeClient,spread,spreadVersion,idempotencyKey,clOrdId,tradingMode.name());
+                indicativeMarket,indicativeClientRaw,indicativeClient,spread,spreadVersion,idempotencyKey,clOrdId,tradingMode.name(),spreadType.name(),priceUnit,quoteScale);
         return ids.isEmpty() ? -1L : ids.getFirst();
     }
 
@@ -109,6 +120,8 @@ public class OrderRepository {
                 rs.getObject("unknown_since",java.time.OffsetDateTime.class),rs.getObject("next_resolution_at",java.time.OffsetDateTime.class),
                 rs.getObject("manual_review_at",java.time.OffsetDateTime.class),rs.getObject("created_at",java.time.OffsetDateTime.class),
                 rs.getObject("submitted_at",java.time.OffsetDateTime.class),rs.getObject("executed_at",java.time.OffsetDateTime.class),
-                TradingMode.valueOf(rs.getString("trading_mode")));
+                TradingMode.valueOf(rs.getString("trading_mode")),
+                com.saamp.trading.pricing.SpreadType.valueOf(rs.getString("spread_type")),rs.getString("spread_quote_currency"),
+                rs.getString("spread_price_unit"),rs.getInt("spread_quote_scale"));
     }
 }

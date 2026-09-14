@@ -46,6 +46,8 @@ class OrderExecutionServiceTest {
         when(order.indicativeClientPrice()).thenReturn(new BigDecimal("100"));
         when(order.tradingMode()).thenReturn(TradingMode.LIVE);
         when(order.createdAt()).thenReturn(OffsetDateTime.now());
+        when(order.spreadSnapshot(Asset.EUR)).thenReturn(new SpreadValue(SpreadType.PERCENTAGE,BigDecimal.ZERO,"OZ"));
+        when(order.spreadQuoteScale()).thenReturn(6);
         when(order.clOrdId()).thenReturn("CL-123"); when(order.pair()).thenReturn("XAUEUR");
         quote=new ClientQuote(Asset.XAU,"XAUEUR",new BigDecimal("99"),new BigDecimal("100"),
                 new BigDecimal("100"),new BigDecimal("99"),new BigDecimal("100"),new BigDecimal("99"),
@@ -136,7 +138,7 @@ class OrderExecutionServiceTest {
         service.submit(123,42,99,TradingMode.DEMO);
 
         verifyNoInteractions(provider);
-        verify(events).handleFilled(eq(order),eq(account),startsWith("SIM-"),eq(new BigDecimal("100")),eq(quote),eq("user:99"));
+        verify(events).handleFilled(eq(order),eq(account),startsWith("SIM-"),eq(new BigDecimal("100")),any(ClientQuote.class),eq("user:99"));
     }
 
     @Test void liveDraftCannotBeSubmittedAsDemo() {

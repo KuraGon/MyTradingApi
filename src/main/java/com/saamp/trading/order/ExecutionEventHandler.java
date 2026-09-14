@@ -71,10 +71,10 @@ public class ExecutionEventHandler {
         if (order.status()==OrderStatus.FILLED) return;
         if (order.status()!=OrderStatus.PENDING && order.status()!=OrderStatus.PENDING_UNKNOWN)
             throw new IllegalStateException("Execution requires a submitted order");
-        BigDecimal spread = order.side() == OrderSide.BUY ? quoteAtSubmission.spreadBuy() : quoteAtSubmission.spreadSell();
-        AssetConfig config = pricing.findAssetConfig(order.asset()).orElseThrow();
-        BigDecimal clientPriceRaw = PriceMath.rawClientPrice(marketRate, spread, order.side());
-        BigDecimal clientPrice = PriceMath.clientPrice(marketRate, spread, order.side(), config.quoteScale());
+        var snapshot=order.spreadSnapshot(account.baseCurrency());
+        BigDecimal spread = snapshot.value();
+        BigDecimal clientPriceRaw = PriceMath.applySpread(marketRate, snapshot, order.side());
+        BigDecimal clientPrice = PriceMath.applySpreadRounded(marketRate, snapshot, order.side(), order.spreadQuoteScale());
         BigDecimal cashAmountRaw = order.quantityOz().multiply(clientPrice);
         BigDecimal gross = cashAmountRaw.setScale(2, RoundingMode.HALF_UP);
         BigDecimal revenue = order.quantityOz().multiply(clientPrice.subtract(marketRate).abs()).setScale(6, RoundingMode.HALF_UP);
@@ -87,7 +87,7 @@ public class ExecutionEventHandler {
         } else {
             ledger.postTrade(account.id(), order.asset(), metalDelta, account.baseCurrency(), cashDelta, order.id(), actor);
         }
-        orders.markFilled(order.id(), executionId, marketRate, clientPriceRaw, clientPrice, spread, quoteAtSubmission.spreadConfigVersion(), revenue, gross);
+        orders.markFilled(order.id(), executionId, marketRate, clientPriceRaw, clientPrice, spread, order.spreadConfigVersion(), revenue, gross);
         reservations.consumeForOrder(order.id());
     }
 

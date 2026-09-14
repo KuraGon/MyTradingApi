@@ -59,16 +59,17 @@ public class PricingService {
             refresh.refresh(pair);
             market = maxAge == null ? marketPrices.requireFreshForDisplay(pair) : marketPrices.requireFresh(pair, maxAge);
         }
+        if (!pair.equals(market.pair())) throw new TradingException(HttpStatus.CONFLICT,"QUOTE_PAIR_MISMATCH","Paire de cotation incoherente");
         SpreadConfig spread = repository.findCurrentSpread(companyId, metal, OffsetDateTime.now())
                 .orElseThrow(() -> new TradingException(HttpStatus.CONFLICT, "SPREAD_NOT_CONFIGURED", "Spread non configuré pour " + metal));
         AssetConfig assetConfig = repository.findAssetConfig(metal)
                 .orElseThrow(() -> new TradingException(HttpStatus.CONFLICT, "ASSET_NOT_CONFIGURED", "Actif non configuré: " + metal));
         if (!assetConfig.enabled()) throw new TradingException(HttpStatus.CONFLICT, "ASSET_DISABLED", "Actif désactivé: " + metal);
         return new ClientQuote(metal, pair, market.bid(), market.ask(),
-                PriceMath.rawClientPrice(market.ask(), spread.spreadBuy(), com.saamp.trading.domain.OrderSide.BUY),
-                PriceMath.rawClientPrice(market.bid(), spread.spreadSell(), com.saamp.trading.domain.OrderSide.SELL),
-                PriceMath.clientPrice(market.ask(), spread.spreadBuy(), com.saamp.trading.domain.OrderSide.BUY, assetConfig.quoteScale()),
-                PriceMath.clientPrice(market.bid(), spread.spreadSell(), com.saamp.trading.domain.OrderSide.SELL, assetConfig.quoteScale()),
-                spread.spreadBuy(), spread.spreadSell(), spread.configVersion(), market.priceAsOf());
+                PriceMath.applySpread(market.ask(), spread.value(com.saamp.trading.domain.OrderSide.BUY), com.saamp.trading.domain.OrderSide.BUY),
+                PriceMath.applySpread(market.bid(), spread.value(com.saamp.trading.domain.OrderSide.SELL), com.saamp.trading.domain.OrderSide.SELL),
+                PriceMath.applySpreadRounded(market.ask(), spread.value(com.saamp.trading.domain.OrderSide.BUY), com.saamp.trading.domain.OrderSide.BUY, assetConfig.quoteScale()),
+                PriceMath.applySpreadRounded(market.bid(), spread.value(com.saamp.trading.domain.OrderSide.SELL), com.saamp.trading.domain.OrderSide.SELL, assetConfig.quoteScale()),
+                spread.spreadBuy(), spread.spreadSell(), spread.configVersion(), market.priceAsOf(),spread.spreadType(),spread.priceUnit());
     }
 }

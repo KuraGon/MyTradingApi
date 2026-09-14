@@ -45,8 +45,7 @@ public class PendingUnknownResolver {
                             report.get().state(), order.id(), order.clOrdId());
                     if (report.get().state() == ExecutionState.PROCESSED) {
                         var account = accounts.findById(order.accountId()).orElseThrow();
-                        var quote = pricing.quoteForExecution(order.companyId(), order.asset(), account.baseCurrency());
-                        events.handleFilled(order, account, report.get().executionId(), report.get().fillRate(), quote, "system:request-status");
+                        events.handleFilled(order, account, report.get().executionId(), report.get().fillRate(), null, "system:request-status");
                         continue;
                     }
                     if (report.get().state() == ExecutionState.FAILED) {

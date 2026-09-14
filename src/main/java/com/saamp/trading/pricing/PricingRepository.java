@@ -51,7 +51,8 @@ public class PricingRepository {
                 ORDER BY active_from DESC LIMIT 1
                 """, (rs,n) -> new SpreadConfig(rs.getLong("id"), rs.getLong("company_id"), Asset.valueOf(rs.getString("asset")),
                 rs.getBigDecimal("spread_buy"), rs.getBigDecimal("spread_sell"), rs.getInt("config_version"),
-                rs.getObject("active_from", OffsetDateTime.class), rs.getObject("active_to", OffsetDateTime.class)),
+                rs.getObject("active_from", OffsetDateTime.class), rs.getObject("active_to", OffsetDateTime.class),
+                SpreadType.valueOf(rs.getString("spread_type")),rs.getString("price_unit")),
                 companyId, asset.name(), now, now).stream().findFirst();
     }
 

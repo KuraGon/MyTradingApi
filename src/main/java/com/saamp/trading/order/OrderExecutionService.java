@@ -115,7 +115,7 @@ public class OrderExecutionService {
             long id=orders.insertDraft(locked.id(),companyId,request.asset(),quote.pair(),request.side(),request.quantity(),request.unit(),qty,
                     buy?quote.marketAsk():quote.marketBid(),buy?quote.clientBuyPriceRaw():quote.clientSellPriceRaw(),indicative,
                     buy?quote.spreadBuy():quote.spreadSell(),quote.spreadConfigVersion(),request.idempotencyKey(),
-                    ClientOrderIdFactory.fromIdempotencyKey(request.idempotencyKey()),mode);
+                    ClientOrderIdFactory.fromIdempotencyKey(request.idempotencyKey()),mode,quote.spreadType(),quote.priceUnit(),config.quoteScale());
             if (id<0) {
                 var other=orders.findByIdempotencyKey(request.idempotencyKey()).orElseThrow();
                 ensureOwnership(other,companyId);
@@ -180,7 +180,18 @@ public class OrderExecutionService {
             }
             var config=config(order.asset(),order.quantityOz());
             var fresh=quotes.get(order.asset());
-            BigDecimal price=order.side()==OrderSide.BUY?fresh.clientBuyPrice():fresh.clientSellPrice();
+            if (!order.pair().equals(fresh.pair())) throw new IllegalStateException("QUOTE_PAIR_MISMATCH");
+            // Prix de l'ordre fige au preview ; valorisation des autres expositions aux conditions courantes.
+            var snapshot=order.spreadSnapshot(lockedAccount.baseCurrency());
+            boolean buy=order.side()==OrderSide.BUY;
+            BigDecimal market=buy?fresh.marketAsk():fresh.marketBid();
+            BigDecimal raw=PriceMath.applySpread(market,snapshot,order.side());
+            BigDecimal price=PriceMath.applySpreadRounded(market,snapshot,order.side(),order.spreadQuoteScale());
+            fresh=new ClientQuote(fresh.asset(),fresh.pair(),fresh.marketBid(),fresh.marketAsk(),
+                    buy?raw:fresh.clientBuyPriceRaw(),buy?fresh.clientSellPriceRaw():raw,
+                    buy?price:fresh.clientBuyPrice(),buy?fresh.clientSellPrice():price,
+                    fresh.spreadBuy(),fresh.spreadSell(),fresh.spreadConfigVersion(),fresh.priceAsOf(),fresh.spreadType(),fresh.priceUnit());
+            quotes.put(order.asset(),fresh);
             if (PriceMath.driftRatio(order.indicativeClientPrice(),price).compareTo(config.driftTolerance())>0) {
                 orders.markRejected(orderId,"PRICE_MOVED","Le prix a dépassé la tolérance de dérive");
                 reservationRepository.releaseForOrder(orderId);

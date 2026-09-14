@@ -55,7 +55,7 @@ class RiskMonitorIntegrationTest {
         historical=jdbc.queryForList("SELECT * FROM databasechangelog ORDER BY orderexecuted");
         migrate(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(13);
-        migrate(2);
+        migrate(3); // 014..016 : schema courant du pricing
         context=new AnnotationConfigApplicationContext();
         context.registerBean(DataSource.class,()->ds);
         context.registerBean(JdbcTemplate.class,()->jdbc);
@@ -111,7 +111,7 @@ class RiskMonitorIntegrationTest {
 
     @Test void installAndUpgradePreserveHistoryAndProtectAudit() {
         assertThat(jdbc.queryForList("SELECT * FROM databasechangelog WHERE orderexecuted<=12 ORDER BY orderexecuted")).isEqualTo(historical);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(15);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog",Integer.class)).isEqualTo(16);
         warningAccount();assertThat(service.observe(id)).isTrue();
         assertThatThrownBy(()->jdbc.update("UPDATE trading_risk_monitor_event SET reason='tampered' WHERE account_id=?",id)).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThatThrownBy(()->jdbc.update("DELETE FROM trading_risk_monitor_event WHERE account_id=?",id)).isInstanceOf(org.springframework.dao.DataAccessException.class);
