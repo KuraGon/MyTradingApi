@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Optional;
+import java.util.List;
 
 @Repository
 public class AccountRepository {
@@ -21,6 +22,11 @@ public class AccountRepository {
 
     public Optional<TradingAccount> findById(long id) {
         return jdbc.query("SELECT * FROM trading_account WHERE id = ?", this::map, id).stream().findFirst();
+    }
+
+    public List<TradingAccount> findActiveLiveMapped() {
+        return jdbc.query("SELECT * FROM trading_account WHERE status='ACTIVE' AND account_mode='LIVE' "
+                + "AND as400_ste IS NOT NULL AND as400_nucli_trading IS NOT NULL", this::map);
     }
 
     /**
