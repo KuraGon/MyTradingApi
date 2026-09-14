@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import com.saamp.trading.as400.As400FxSource;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -24,26 +25,27 @@ public class EffectiveBalanceService {
     private final EffectiveBalanceProperties config;
     private final ShadowBalanceDiagnostics shadow = new ShadowBalanceDiagnostics();
     private final EffectiveBalanceTelemetry telemetry;
+    private final As400FxSource fxSource;
     private final OfficialBalanceAvailability availability = new OfficialBalanceAvailability();
     /** @param projection historique interne @param accounts identité trading @param adjustments faits persistés
      * @param official lecture officielle @param config mode et fraîcheur technique */
     public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
             PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official, EffectiveBalanceProperties config) {
-        this(projection, accounts, adjustments, official, config, null, new SimpleMeterRegistry());
+        this(projection, accounts, adjustments, official, config, null, new SimpleMeterRegistry(), null);
     }
     /** @param projection historique interne @param accounts identite trading @param adjustments faits persistes
      * @param official lecture officielle @param config mode @param metrics mesures techniques sans soldes */
     public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
             PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official,
             EffectiveBalanceProperties config, MeterRegistry metrics) {
-        this(projection, accounts, adjustments, official, config, null, metrics);
+        this(projection, accounts, adjustments, official, config, null, metrics, null);
     }
     /** Spring constructor; DEMO projection is deliberately independent from the AS400-aware LIVE projection. */
     @Autowired
     public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
             PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official,
-            EffectiveBalanceProperties config, DemoBalanceRepository demoProjection, MeterRegistry metrics) {
-        this.projection=projection;this.demoProjection=demoProjection;this.accounts=accounts;this.adjustments=adjustments;this.official=official;this.config=config;
+            EffectiveBalanceProperties config, DemoBalanceRepository demoProjection, MeterRegistry metrics, As400FxSource fxSource) {
+        this.projection=projection;this.demoProjection=demoProjection;this.accounts=accounts;this.adjustments=adjustments;this.official=official;this.config=config;this.fxSource=fxSource;
         this.telemetry = new EffectiveBalanceTelemetry(metrics);
     }
     /** @return mode imposant la source officielle pour toute décision */
@@ -164,9 +166,13 @@ public class EffectiveBalanceService {
                     pending.merge(fact.currency(),buy?fact.grossAmount().negate():fact.grossAmount(),BigDecimal::add);
                 }
             }
+            var officialValued = account.baseCurrency()==Asset.USD
+                    ? OfficialCashValuationService.value(second.balances(), account.baseCurrency(), requireFx())
+                    : second.balances();
             var result=new ArrayList<Balance>();
             for(var asset:List.of(Asset.EUR,Asset.XAU,Asset.XAG,Asset.XPT,Asset.XPD)) {
-                var value=second.balances().get(asset);
+                if (account.baseCurrency()==Asset.USD && asset==Asset.EUR) continue;
+                var value=officialValued.get(asset);
                 if(value==null) throw unavailable();
                 result.add(new Balance(account.id(),asset,value.add(pending.getOrDefault(asset,BigDecimal.ZERO)),OffsetDateTime.now(ZoneOffset.UTC)));
             }
@@ -186,6 +192,12 @@ public class EffectiveBalanceService {
             telemetry.record(account.id(),config.getMode(),available,System.nanoTime()-captureStart,officialNanos,factCount,reason);
         }
     }
+    public EffectiveBalanceService(BalanceRepository projection, AccountRepository accounts,
+            PendingTradingAdjustmentRepository adjustments, OfficialTradingBalanceReader official,
+            EffectiveBalanceProperties config, DemoBalanceRepository demoProjection, MeterRegistry metrics) {
+        this(projection, accounts, adjustments, official, config, demoProjection, metrics, null);
+    }
+    private As400FxSource requireFx() { if (fxSource==null) throw unavailable(); return fxSource; }
 
     /** Libere uniquement la tache diagnostique SHADOW a l'arret du contexte. */
     @PreDestroy public void close() { shadow.close(); }
