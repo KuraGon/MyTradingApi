@@ -60,15 +60,13 @@ public class PricingRepository {
                        d.config_version, d.active_from, d.active_to,
                        d.spread_type, d.price_unit
                 FROM trading_spread_default d
-                JOIN (SELECT as400_ste FROM trading_account WHERE company_id=?
-                      ORDER BY id LIMIT 1) a ON a.as400_ste=d.scope_ste
                 WHERE d.asset=? AND d.active_from<=? AND (d.active_to IS NULL OR d.active_to>?)
                 ORDER BY d.active_from DESC LIMIT 1
                 """, (rs,n) -> new SpreadConfig(rs.getLong("id"),rs.getLong("company_id"),Asset.valueOf(rs.getString("asset")),
                 rs.getBigDecimal("spread_buy"),rs.getBigDecimal("spread_sell"),rs.getInt("config_version"),
                 rs.getObject("active_from", OffsetDateTime.class),rs.getObject("active_to", OffsetDateTime.class),
                 SpreadType.valueOf(rs.getString("spread_type")),rs.getString("price_unit")),
-                companyId, companyId, asset.name(), now, now).stream().findFirst();
+                companyId, asset.name(), now, now).stream().findFirst();
     }
 
     public Optional<AssetConfig> findAssetConfig(Asset asset) {
