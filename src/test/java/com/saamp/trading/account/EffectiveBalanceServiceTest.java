@@ -69,10 +69,10 @@ class EffectiveBalanceServiceTest {
         service.capture(account);
         verify(official,times(2)).read(argThat(a->a.as400NucliTrading()==20662),anyList());
     }
-    @Test void usdIsExplicitlyUnsupported() {
+    @Test void usdRequiresOfficialFx() {
         var usd=new TradingAccount(1,1,Asset.USD,AccountStatus.ACTIVE,null,null,null,"B",17492,20662,1,OffsetDateTime.now(),OffsetDateTime.now());
-        assertThatThrownBy(()->service.capture(usd)).isInstanceOfSatisfying(TradingException.class,e->assertThat(e.getCode()).isEqualTo("OFFICIAL_CURRENCY_UNSUPPORTED"));
-        verifyNoInteractions(official);
+        assertThatThrownBy(()->service.capture(usd)).isInstanceOfSatisfying(TradingException.class,e->assertThat(e.getCode()).isEqualTo("OFFICIAL_BALANCE_UNAVAILABLE"));
+        verify(official,times(2)).read(eq(usd),anyList());
     }
     @ParameterizedTest @ValueSource(booleans={false,true})
     void buyUsesPersistedAmountsAndOnlyClientImputation(boolean posted) {
@@ -123,7 +123,7 @@ class EffectiveBalanceServiceTest {
     @Test void expiredSnapshotCannotAdmit() {
         var snapshot=service.capture(account);
         snapshot=new EffectiveBalanceSnapshot(snapshot.accountId(),snapshot.ste(),snapshot.nucliTrading(),snapshot.officialBalances(),
-                snapshot.pendingAdjustments(),snapshot.calculatedEffectiveBalances(),snapshot.decisionBalances(),Instant.now().minusSeconds(60),snapshot.completedAt(),
+                snapshot.pendingAdjustments(),snapshot.calculatedEffectiveBalances(),snapshot.decisionBalances(),snapshot.startedAt(),Instant.now().minusSeconds(60),
                 snapshot.available(),snapshot.error(),snapshot.clientPosted(),snapshot.facts(),snapshot.enforced());
         final var expired=snapshot;
         assertThatThrownBy(()->service.validate(account,expired)).isInstanceOf(TradingException.class);
@@ -183,11 +183,13 @@ class EffectiveBalanceServiceTest {
     @Test void propertiesBindExplicitModeAndAge() {
         new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(Binding.class)
             .withPropertyValues("trading.effective-balance.mode=ENFORCED","trading.effective-balance.max-snapshot-age=2s",
+                "trading.effective-balance.max-capture-duration=4s",
                 "trading.effective-balance.overlay-cutover-at=2020-01-01T00:00:00Z")
             .run(c->{assertThat(c).hasNotFailed();var p=c.getBean(EffectiveBalanceProperties.class);
                 assertThat(p.getMode()).isEqualTo(EffectiveBalanceProperties.Mode.ENFORCED);
                 assertThat(p.getOverlayCutoverAt()).isEqualTo(Instant.parse("2020-01-01T00:00:00Z"));
-                assertThat(p.getMaxSnapshotAge()).isEqualTo(Duration.ofSeconds(2));});
+                assertThat(p.getMaxSnapshotAge()).isEqualTo(Duration.ofSeconds(2));
+                assertThat(p.getMaxCaptureDuration()).isEqualTo(Duration.ofSeconds(4));});
     }
     @ParameterizedTest @ValueSource(strings={"SHADOW","ENFORCED"})
     void activationWithoutCutoverFailsAtStartup(String mode) {

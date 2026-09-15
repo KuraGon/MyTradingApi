@@ -13,6 +13,7 @@ public class EffectiveBalanceProperties {
     public enum Mode { LEGACY, SHADOW, ENFORCED }
     private Mode mode = Mode.LEGACY;
     private Duration maxSnapshotAge = Duration.ofSeconds(5);
+    private Duration maxCaptureDuration = Duration.ofSeconds(5);
     private Instant overlayCutoverAt;
     /** @return borne inclusive des executions couvertes, sans valeur implicite */
     public Instant getOverlayCutoverAt() { return overlayCutoverAt; }
@@ -35,5 +36,10 @@ public class EffectiveBalanceProperties {
     public void setMaxSnapshotAge(Duration age) {
         if (age == null || age.isNegative() || age.isZero()) throw new IllegalArgumentException("max-snapshot-age must be positive");
         maxSnapshotAge = age;
+    }
+    public Duration getMaxCaptureDuration() { return maxCaptureDuration; }
+    public void setMaxCaptureDuration(Duration duration) {
+        if (duration == null || duration.isNegative() || duration.isZero()) throw new IllegalArgumentException("max-capture-duration must be positive");
+        maxCaptureDuration = duration;
     }
 }

@@ -13,10 +13,13 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.saamp.trading.as400.As400FxSource;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Source unique des comptes opérationnels ; la projection locale reste réservée au settlement. */
 @Service
 public class EffectiveBalanceService {
+    private static final Logger LOG = LoggerFactory.getLogger(EffectiveBalanceService.class);
     private final BalanceRepository projection;
     private final DemoBalanceRepository demoProjection;
     private final AccountRepository accounts;
@@ -58,11 +61,52 @@ public class EffectiveBalanceService {
         Instant now = Instant.now();
         Boolean recent = availability.recent(account, now);
         if (!availability.refreshDue(account, now)) return Boolean.TRUE.equals(recent);
-        shadow.submit(() -> {
-            try { return captureDiagnostic(account, true).available(); }
-            catch (RuntimeException failure) { return false; }
-        });
+        shadow.submit(() -> probeOfficialReadiness(account));
         return Boolean.TRUE.equals(recent);
+    }
+
+    /** Technical readiness only; strict double-snapshot validation remains in captureDiagnostic. */
+    boolean probeOfficialReadiness(TradingAccount account) {
+        LOG.info("OFFICIAL_READINESS_PROBE_START accountId={} companyId={}", account.id(), account.companyId());
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            Instant attemptStarted = Instant.now();
+            try {
+                var reading = official.readDiagnostic(account, List.of());
+                if (reading.balances().get(account.baseCurrency()==Asset.USD ? Asset.EUR : Asset.EUR) == null)
+                    throw unavailable();
+                if (account.baseCurrency()==Asset.USD) OfficialCashValuationService.value(reading.balances(), Asset.USD, requireFx());
+                availability.record(account, attemptStarted, Instant.now(), true);
+                LOG.info("OFFICIAL_READINESS_PROBE_OK accountId={} companyId={} attempt={} durationMs={}",
+                        account.id(), account.companyId(), attempt, Duration.between(attemptStarted, Instant.now()).toMillis());
+                return true;
+            } catch (RuntimeException failure) {
+                last = failure;
+                availability.record(account, attemptStarted, Instant.now(), false);
+                LOG.warn("OFFICIAL_READINESS_PROBE_FAILED accountId={} companyId={} attempt={} failureCode={} durationMs={}",
+                        account.id(), account.companyId(), attempt, safeFailureCode(failure),
+                        Duration.between(attemptStarted, Instant.now()).toMillis());
+            }
+            if (attempt < 3) try { Thread.sleep(2000L); } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        LOG.warn("OFFICIAL_READINESS_PROBE_FAILED accountId={} companyId={} failureCode={}",
+                account.id(), account.companyId(), safeFailureCode(last));
+        return false;
+    }
+
+    private static String safeFailureCode(RuntimeException failure) {
+        if (failure == null) return "UNKNOWN";
+        if (failure instanceof TradingException t) return t.getCode();
+        String message = failure.getMessage();
+        if (message == null) return failure.getClass().getSimpleName();
+        String upper = message.toUpperCase(Locale.ROOT);
+        if (upper.contains("TIMEOUT")) return "OFFICIAL_AS400_TIMEOUT";
+        if (upper.contains("CONNECTION")) return "OFFICIAL_AS400_CONNECTION_FAILED";
+        if (upper.contains("FX")) return "OFFICIAL_FX_UNAVAILABLE";
+        return "OFFICIAL_PROBE_FAILED";
     }
     /** @param accountId compte @return soldes selon le mode, sans fallback en ENFORCED */
     public List<Balance> findAll(long accountId) {
@@ -153,9 +197,11 @@ public class EffectiveBalanceService {
                 first=probe ? official.readDiagnostic(account,facts) : official.read(account,facts);
                 second=probe ? official.readDiagnostic(account,facts) : official.read(account,facts);
             } finally { officialNanos=System.nanoTime()-officialStart; }
-            reason="INCONSISTENT_OR_EXPIRED_SNAPSHOT";
-            if(!first.equals(second) || !facts.equals(adjustments.read(account.id()))
-                    || !Instant.now().isBefore(start.plus(config.getMaxSnapshotAge()))) throw unavailable();
+            reason="OFFICIAL_SNAPSHOT_INCONSISTENT";
+            boolean sameBusinessSnapshot = OfficialSnapshotEquivalence.businessEquivalent(first, second);
+            var currentFacts = adjustments.read(account.id());
+            boolean sameFacts = OfficialSnapshotEquivalence.adjustmentsEquivalent(facts, currentFacts);
+            if(!sameBusinessSnapshot || !sameFacts) throw unavailable();
             var pending=new EnumMap<Asset,BigDecimal>(Asset.class);
             for(var fact:facts) {
                 Boolean posted=second.clientPosted().get(fact.orderId());
@@ -176,7 +222,10 @@ public class EffectiveBalanceService {
                 if(value==null) throw unavailable();
                 result.add(new Balance(account.id(),asset,value.add(pending.getOrDefault(asset,BigDecimal.ZERO)),OffsetDateTime.now(ZoneOffset.UTC)));
             }
-            var completed=snapshot(account,start,true,null,facts,second.balances(),pending,second.clientPosted(),result,
+            Instant completedAt=Instant.now();
+            reason="SNAPSHOT_CAPTURE_TOO_SLOW";
+            if(!SnapshotTiming.captureWithin(start,completedAt,config.getMaxCaptureDuration())) throw unavailable();
+            var completed=snapshot(account,start,completedAt,true,null,facts,second.balances(),pending,second.clientPosted(),result,
                     enforced?result:projection.findAll(account.id()),enforced);
             available=true;
             reason="OK";
@@ -188,7 +237,8 @@ public class EffectiveBalanceService {
             }
             return snapshot(account,start,false,"OFFICIAL_BALANCE_UNAVAILABLE",List.of(),Map.of(),Map.of(),Map.of(),List.of(),projection.findAll(account.id()),false);
         } finally {
-            availability.record(account,start,Instant.now(),available);
+            // Only the dedicated readiness probe may publish technical availability.
+            if (probe) availability.record(account,start,Instant.now(),available);
             telemetry.record(account.id(),config.getMode(),available,System.nanoTime()-captureStart,officialNanos,factCount,reason);
         }
     }
@@ -214,7 +264,7 @@ public class EffectiveBalanceService {
         if(!snapshot.enforced()) return projection.findAll(account.id());
         if(snapshot.accountId()!=account.id() || !Objects.equals(snapshot.ste(),account.as400Ste())
                 || !Objects.equals(snapshot.nucliTrading(),account.as400NucliTrading()) || (account.baseCurrency()!=Asset.EUR && account.baseCurrency()!=Asset.USD)
-                || !snapshot.available() || !Instant.now().isBefore(snapshot.startedAt().plus(config.getMaxSnapshotAge()))
+                || !SnapshotTiming.fresh(snapshot.completedAt(),Instant.now(),config.getMaxSnapshotAge())
                 || !snapshot.facts().equals(adjustments.read(account.id()))) {
             Instant failedAt=Instant.now(); availability.record(account,failedAt,failedAt,false);
             throw unavailable();
@@ -231,8 +281,13 @@ public class EffectiveBalanceService {
     private EffectiveBalanceSnapshot snapshot(TradingAccount account,Instant start,boolean available,String error,
             List<PendingTradingAdjustmentRepository.Adjustment> facts,Map<Asset,BigDecimal> official,
             Map<Asset,BigDecimal> pending,Map<Long,Boolean> posted,List<Balance> calculated,List<Balance> decision,boolean enforced) {
+        return snapshot(account,start,Instant.now(),available,error,facts,official,pending,posted,calculated,decision,enforced);
+    }
+    private EffectiveBalanceSnapshot snapshot(TradingAccount account,Instant start,Instant completedAt,boolean available,String error,
+            List<PendingTradingAdjustmentRepository.Adjustment> facts,Map<Asset,BigDecimal> official,
+            Map<Asset,BigDecimal> pending,Map<Long,Boolean> posted,List<Balance> calculated,List<Balance> decision,boolean enforced) {
         return new EffectiveBalanceSnapshot(account.id(),account.as400Ste(),account.as400NucliTrading(),official,pending,calculated,decision,
-                start,Instant.now(),available,error,posted,facts,enforced);
+                start,completedAt,available,error,posted,facts,enforced);
     }
     private static TradingException unavailable() {
         return new TradingException(HttpStatus.SERVICE_UNAVAILABLE,"OFFICIAL_BALANCE_UNAVAILABLE","Compte officiel AS400 indisponible ou incohérent");

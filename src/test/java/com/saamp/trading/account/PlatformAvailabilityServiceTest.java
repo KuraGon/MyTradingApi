@@ -44,12 +44,15 @@ class PlatformAvailabilityServiceTest {
     @Test void officialCaptureFeedsStatusAndBusinessStillRequiresItsOwnCapture() {
         doReturn(reading()).when(reader).read(any(),anyList());
         balances.capture(live);
-        assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("OPEN");
+        assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("TECHNICAL_CLOSURE");
         verify(reader,times(2)).read(any(),anyList());
-        verify(reader,never()).readDiagnostic(any(),anyList());
+        doReturn(reading()).when(reader).readDiagnostic(any(),anyList());
+        assertThat(balances.probeOfficialReadiness(live)).isTrue();
+        assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("OPEN");
         when(reader.read(any(),anyList())).thenThrow(new IllegalStateException("internal test failure"));
         assertThatThrownBy(()->balances.captureForOperation(live)).isInstanceOf(TradingException.class);
-        assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("TECHNICAL_CLOSURE");
+        // Technical readiness remains OPEN; the strict operation capture still failed closed above.
+        assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("OPEN");
         doReturn(reading()).when(reader).read(any(),anyList());
         balances.capture(live);
         assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("OPEN");
@@ -72,7 +75,7 @@ class PlatformAvailabilityServiceTest {
             release.countDown();
             org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).untilAsserted(()->
                 assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("OPEN"));
-            verify(reader,times(2)).readDiagnostic(any(),anyList());
+            verify(reader,times(1)).readDiagnostic(any(),anyList());
             verify(reader,never()).read(any(),anyList());
             verifyNoInteractions(projection);
         } finally { release.countDown(); }
