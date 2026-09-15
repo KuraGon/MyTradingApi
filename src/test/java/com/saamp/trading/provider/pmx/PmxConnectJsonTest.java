@@ -59,6 +59,37 @@ class PmxConnectJsonTest {
     }
 
     @Test
+    void derivesMidAtScaleSixUsingHalfUp() {
+        var quotes = json.readSpotRates("""
+                {"result":[{"PAIR":"EURUSD","BID":1.1533,"ASK":1.15453}]}
+                """, OffsetDateTime.now());
+        assertThat(quotes.get(0).mid()).isEqualTo(new BigDecimal("1.153915"));
+        assertThat(quotes.get(0).mid().scale()).isEqualTo(6);
+    }
+
+    @Test
+    void derivesHalfUpMidWhenInputScalesDiffer() {
+        var quotes = json.readSpotRates("""
+                {"result":[{"PAIR":"EURUSD","BID":1.000000,"ASK":1.000001}]}
+                """, OffsetDateTime.now());
+        assertThat(quotes.get(0).mid()).isEqualTo(new BigDecimal("1.000001"));
+        assertThat(quotes.get(0).mid().scale()).isEqualTo(6);
+    }
+
+    @Test
+    void rejectsNonPositiveOrInvertedSpotRates() {
+        for (String payload : new String[]{
+                "{\"result\":[{\"PAIR\":\"EURUSD\",\"BID\":0,\"ASK\":1}]}",
+                "{\"result\":[{\"PAIR\":\"EURUSD\",\"BID\":-1,\"ASK\":1}]}",
+                "{\"result\":[{\"PAIR\":\"EURUSD\",\"BID\":2,\"ASK\":1}]}"
+        }) {
+            assertThatThrownBy(() -> json.readSpotRates(payload, OffsetDateTime.now()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Invalid PMXConnect spot price");
+        }
+    }
+
+    @Test
     void readsObservedPositionsAndKeepsProviderAccountCodeDistinctFromTokenClientId() {
         String payload = """
                 {

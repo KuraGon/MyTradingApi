@@ -16,6 +16,7 @@ import com.saamp.trading.provider.SpotOrderRequest;
 import com.saamp.trading.domain.Asset;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -62,7 +63,11 @@ public final class PmxConnectJson {
                 if (rate.pair() == null || rate.bid() == null || rate.ask() == null) {
                     throw new IllegalArgumentException("Réponse PMXConnect GetSpotRates incomplète");
                 }
-                result.add(new MarketQuote(rate.pair().toUpperCase(Locale.ROOT), rate.bid(), rate.ask(), null, commonAsOf));
+                if (rate.bid().signum() <= 0 || rate.ask().signum() <= 0 || rate.ask().compareTo(rate.bid()) < 0) {
+                    throw new IllegalArgumentException("Invalid PMXConnect spot price");
+                }
+                BigDecimal mid = rate.bid().add(rate.ask()).divide(BigDecimal.valueOf(2), 6, RoundingMode.HALF_UP);
+                result.add(new MarketQuote(rate.pair().toUpperCase(Locale.ROOT), rate.bid(), rate.ask(), mid, commonAsOf));
             }
             return List.copyOf(result);
         } catch (JsonProcessingException e) {

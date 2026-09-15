@@ -73,4 +73,14 @@ class As400FxSourceTest {
                 BigDecimal.ONE,BigDecimal.ONE,null,OffsetDateTime.now())));
         assertThatThrownBy(()->new As400FxSource(provider,"MID").fetch()).hasMessage("AS400_FX_RATE_UNAVAILABLE");
     }
+
+    @Test void fetchValuationAcceptsMidpointProducedFromValidBidAsk() {
+        when(provider.fetchSpotRates(Set.of("EURUSD"))).thenReturn(List.of(new MarketQuote("EURUSD",
+                new BigDecimal("1.1533"), new BigDecimal("1.15453"),
+                new BigDecimal("1.153915"), OffsetDateTime.now())));
+        when(provider.sourceName()).thenReturn("PMXCONNECT");
+        var fx = new As400FxSource(provider, "MID").fetch();
+        assertThat(fx.rate()).isEqualByComparingTo("1.15");
+        assertThat(fx.source()).isEqualTo("PMXCONNECT:MID");
+    }
 }
